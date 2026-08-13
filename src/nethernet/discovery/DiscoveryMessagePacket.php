@@ -25,7 +25,7 @@ declare(strict_types=1);
 
 namespace altay\network\nethernet\discovery;
 
-use pocketmine\utils\BinaryStream;
+use altay\network\nethernet\PacketSerializer;
 
 final class DiscoveryMessagePacket extends DiscoveryPacket{
 
@@ -40,14 +40,13 @@ final class DiscoveryMessagePacket extends DiscoveryPacket{
 		return self::ID;
 	}
 
-	public function encodePayload(BinaryStream $out) : void{
+	public function encodePayload(PacketSerializer $out) : void{
 		$out->putLLong($this->recipientId);
-		$out->putLInt(strlen($this->data));
-		$out->put($this->data);
+		$out->putByteArray($this->data);
 	}
 
-	public function decodePayload(BinaryStream $in) : void{
+	public function decodePayload(PacketSerializer $in) : void{
 		$this->recipientId = $in->getLLong();
-		$this->data = $in->get($in->getLInt());
+		$this->data = $in->getByteArray();
 	}
 }
