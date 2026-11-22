@@ -6,14 +6,12 @@ namespace altay\netherlib\tests\ipc;
 
 use altay\netherlib\ipc\InterThreadChannelReader;
 use altay\netherlib\ipc\InterThreadChannelWriter;
-use altay\netherlib\ipc\MainToTransportThreadMessageReceiver;
-use altay\netherlib\ipc\MainToTransportThreadMessageSender;
-use altay\netherlib\ipc\TransportToMainThreadEventHandler;
-use altay\netherlib\ipc\TransportToMainThreadMessageReceiver;
-use altay\netherlib\ipc\TransportToMainThreadMessageSender;
-use altay\netherlib\transport\Transport;
-use altay\netherlib\transport\TransportListener;
-use altay\netherlib\transport\TransportSession;
+use altay\netherlib\ipc\UserToNetherLibThreadMessageReceiver;
+use altay\netherlib\ipc\UserToNetherLibThreadMessageSender;
+use altay\netherlib\ipc\NetherLibToUserThreadMessageReceiver;
+use altay\netherlib\ipc\NetherLibToUserThreadMessageSender;
+use altay\netherlib\ServerInterface;
+use altay\netherlib\ServerListener;
 use PHPUnit\Framework\TestCase;
 
 final class IpcRoundTripTest extends TestCase{
@@ -26,32 +24,31 @@ final class IpcRoundTripTest extends TestCase{
 			public function read() : ?string{ return array_shift($this->queue); }
 		};
 
-		$sender = new TransportToMainThreadMessageSender($channel);
-		$transport = $this->stubTransport();
-		$session = $this->stubSession(0x1122334455667788, "10.0.0.5", 5000, "PUBKEYDATA");
+		$sender = new NetherLibToUserThreadMessageSender($channel);
+		$id = 0x1122334455667788;
 
-		$sender->onSessionOpen($transport, $session);
-		$sender->onPacketReceive($transport, $session, "hello");
-		$sender->onPacketAck($transport, $session, 99);
-		$sender->onPingUpdate($transport, $session, 42);
-		$sender->onBandwidthUpdate($transport, 1000, 2000);
-		$sender->onRawPacketReceive($transport, "1.2.3.4", 19132, "raw");
-		$sender->onSessionClose($transport, $session, "timeout");
+		$sender->onSessionOpen($id, "10.0.0.5", 5000, "PUBKEYDATA");
+		$sender->onPacketReceive($id, "hello");
+		$sender->onPacketAck($id, 99);
+		$sender->onPingUpdate($id, 42);
+		$sender->onBandwidthUpdate(1000, 2000);
+		$sender->onRawPacketReceive("1.2.3.4", 19132, "raw");
+		$sender->onSessionClose($id, "timeout");
 
 		$events = [];
-		$handler = new class($events) implements TransportToMainThreadEventHandler{
+		$handler = new class($events) implements ServerListener{
 			/** @param mixed[] $events */
 			public function __construct(private array &$events){}
-			public function handleSessionOpen(int $id, string $a, int $p, ?string $k) : void{ $this->events[] = ["open", $id, $a, $p, $k]; }
-			public function handleSessionClose(int $id, string $r) : void{ $this->events[] = ["close", $id, $r]; }
-			public function handlePacketReceive(int $id, string $pl) : void{ $this->events[] = ["packet", $id, $pl]; }
-			public function handlePacketAck(int $id, int $r) : void{ $this->events[] = ["ack", $id, $r]; }
-			public function handlePingUpdate(int $id, int $ms) : void{ $this->events[] = ["ping", $id, $ms]; }
-			public function handleRawPacketReceive(string $a, int $p, string $pl) : void{ $this->events[] = ["raw", $a, $p, $pl]; }
-			public function handleBandwidthUpdate(int $s, int $r) : void{ $this->events[] = ["bw", $s, $r]; }
+			public function onSessionOpen(int $id, string $a, int $p, ?string $k) : void{ $this->events[] = ["open", $id, $a, $p, $k]; }
+			public function onSessionClose(int $id, string $r) : void{ $this->events[] = ["close", $id, $r]; }
+			public function onPacketReceive(int $id, string $pl) : void{ $this->events[] = ["packet", $id, $pl]; }
+			public function onPacketAck(int $id, int $r) : void{ $this->events[] = ["ack", $id, $r]; }
+			public function onPingUpdate(int $id, int $ms) : void{ $this->events[] = ["ping", $id, $ms]; }
+			public function onRawPacketReceive(string $a, int $p, string $pl) : void{ $this->events[] = ["raw", $a, $p, $pl]; }
+			public function onBandwidthUpdate(int $s, int $r) : void{ $this->events[] = ["bw", $s, $r]; }
 		};
 
-		$receiver = new TransportToMainThreadMessageReceiver($channel);
+		$receiver = new NetherLibToUserThreadMessageReceiver($channel);
 		while($receiver->handle($handler));
 
 		$id = 0x1122334455667788;
@@ -74,62 +71,33 @@ final class IpcRoundTripTest extends TestCase{
 			public function read() : ?string{ return array_shift($this->queue); }
 		};
 
-		$sender = new MainToTransportThreadMessageSender($channel);
+		$sender = new UserToNetherLibThreadMessageSender($channel);
 		$id = 0x1122334455667788;
 		$sender->sendPacket($id, "payload", true, 55);
 		$sender->sendPacket($id, "plain", false, null);
 		$sender->closeSession($id);
 		$sender->shutdown();
 
-		$sent = [];
-		$disconnected = 0;
-		$session = new class($sent) implements TransportSession{
-			/** @param mixed[] $sent */
-			public function __construct(private array &$sent){}
-			public bool $disconnected = false;
-			public function getId() : int{ return 0x1122334455667788; }
-			public function getAddress() : string{ return ""; }
-			public function getPort() : int{ return 0; }
-			public function getPing() : int{ return -1; }
-			public function getAuthenticatedPublicKey() : ?string{ return null; }
-			public function isConnected() : bool{ return true; }
-			public function sendPacket(string $p, bool $i = false, ?int $r = null) : void{ $this->sent[] = [$p, $i, $r]; }
-			public function disconnect() : void{ $this->disconnected = true; }
+		$server = new class implements ServerInterface{
+			/** @var mixed[] */
+			public array $sent = [];
+			/** @var int[] */
+			public array $closed = [];
+			public function sendPacket(int $sessionId, string $payload, bool $immediate = false, ?int $receiptId = null) : void{ $this->sent[] = [$sessionId, $payload, $immediate, $receiptId]; }
+			public function closeSession(int $sessionId) : void{ $this->closed[] = $sessionId; }
+			public function setName(string $name) : void{}
+			public function blockAddress(string $address, int $timeout = 300) : void{}
+			public function unblockAddress(string $address) : void{}
+			public function addRawPacketFilter(string $regex) : void{}
+			public function sendRaw(string $address, int $port, string $payload) : void{}
 		};
-		$transport = $this->stubTransport($session);
 
-		$receiver = new MainToTransportThreadMessageReceiver($channel);
-		while($receiver->handle($transport));
+		$receiver = new UserToNetherLibThreadMessageReceiver($channel);
+		while($receiver->handle($server));
 
-		self::assertSame([["payload", true, 55], ["plain", false, null]], $sent);
-		self::assertTrue($session->disconnected);
+		self::assertSame([[$id, "payload", true, 55], [$id, "plain", false, null]], $server->sent);
+		self::assertSame([$id], $server->closed);
 		self::assertTrue($receiver->isShutdownRequested());
 	}
 
-	private function stubTransport(?TransportSession $session = null) : Transport{
-		return new class($session) implements Transport{
-			public function __construct(private ?TransportSession $session){}
-			public function getName() : string{ return "stub"; }
-			public function start(TransportListener $l) : void{}
-			public function tick() : void{}
-			public function getSession(int $id) : ?TransportSession{ return $this->session; }
-			public function isSelfPacing() : bool{ return false; }
-			public function isRunning() : bool{ return true; }
-			public function shutdown() : void{}
-		};
-	}
-
-	private function stubSession(int $id, string $address, int $port, ?string $publicKey) : TransportSession{
-		return new class($id, $address, $port, $publicKey) implements TransportSession{
-			public function __construct(private int $id, private string $address, private int $port, private ?string $publicKey){}
-			public function getId() : int{ return $this->id; }
-			public function getAddress() : string{ return $this->address; }
-			public function getPort() : int{ return $this->port; }
-			public function getPing() : int{ return -1; }
-			public function getAuthenticatedPublicKey() : ?string{ return $this->publicKey; }
-			public function isConnected() : bool{ return true; }
-			public function sendPacket(string $p, bool $i = false, ?int $r = null) : void{}
-			public function disconnect() : void{}
-		};
-	}
 }

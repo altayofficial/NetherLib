@@ -27,7 +27,7 @@ namespace altay\netherlib\ipc;
 
 use pocketmine\utils\Binary;
 
-final class MainToTransportThreadMessageSender{
+final class UserToNetherLibThreadMessageSender{
 
 	private const FLAG_IMMEDIATE = 0x01;
 	private const FLAG_HAS_RECEIPT = 0x02;
@@ -39,7 +39,7 @@ final class MainToTransportThreadMessageSender{
 	public function sendPacket(int $sessionId, string $payload, bool $immediate = false, ?int $receiptId = null) : void{
 		$flags = ($immediate ? self::FLAG_IMMEDIATE : 0) | ($receiptId !== null ? self::FLAG_HAS_RECEIPT : 0);
 		$this->channel->write(
-			chr(TransportCommandId::SEND_PACKET) .
+			chr(CommandId::SEND_PACKET) .
 			Binary::writeLLong($sessionId) .
 			chr($flags) .
 			($receiptId !== null ? Binary::writeLLong($receiptId) : "") .
@@ -48,40 +48,32 @@ final class MainToTransportThreadMessageSender{
 	}
 
 	public function closeSession(int $sessionId) : void{
-		$this->channel->write(chr(TransportCommandId::CLOSE_SESSION) . Binary::writeLLong($sessionId));
+		$this->channel->write(chr(CommandId::CLOSE_SESSION) . Binary::writeLLong($sessionId));
 	}
 
 	public function shutdown() : void{
-		$this->channel->write(chr(TransportCommandId::SHUTDOWN));
+		$this->channel->write(chr(CommandId::SHUTDOWN));
 	}
 
 	public function setName(string $name) : void{
-		$this->channel->write(chr(TransportCommandId::SET_NAME) . $name);
+		$this->channel->write(chr(CommandId::SET_NAME) . $name);
 	}
 
 	public function blockAddress(string $address, int $timeout) : void{
-		$this->channel->write(chr(TransportCommandId::BLOCK_ADDRESS) . Binary::writeLInt($timeout) . $address);
+		$this->channel->write(chr(CommandId::BLOCK_ADDRESS) . Binary::writeLInt($timeout) . $address);
 	}
 
 	public function unblockAddress(string $address) : void{
-		$this->channel->write(chr(TransportCommandId::UNBLOCK_ADDRESS) . $address);
-	}
-
-	public function setPortCheck(bool $value) : void{
-		$this->channel->write(chr(TransportCommandId::SET_PORT_CHECK) . chr($value ? 1 : 0));
-	}
-
-	public function setPacketsPerTickLimit(int $limit) : void{
-		$this->channel->write(chr(TransportCommandId::SET_PACKET_LIMIT) . Binary::writeLInt($limit));
+		$this->channel->write(chr(CommandId::UNBLOCK_ADDRESS) . $address);
 	}
 
 	public function addRawPacketFilter(string $regex) : void{
-		$this->channel->write(chr(TransportCommandId::ADD_RAW_PACKET_FILTER) . $regex);
+		$this->channel->write(chr(CommandId::ADD_RAW_PACKET_FILTER) . $regex);
 	}
 
 	public function sendRaw(string $address, int $port, string $payload) : void{
 		$this->channel->write(
-			chr(TransportCommandId::SEND_RAW) .
+			chr(CommandId::SEND_RAW) .
 			chr(strlen($address)) . $address .
 			Binary::writeLShort($port) .
 			$payload

@@ -23,11 +23,20 @@
 
 declare(strict_types=1);
 
-namespace altay\netherlib\transport;
+namespace altay\netherlib\ipc;
 
-interface NameableTransport extends Transport{
+final class CommandId{
 
-	public function setName(string $name) : void;
+	public const SEND_PACKET = 0;
+	public const CLOSE_SESSION = 1;
+	public const SHUTDOWN = 2;
+	public const SET_NAME = 3;
+	public const BLOCK_ADDRESS = 4;
+	public const UNBLOCK_ADDRESS = 5;
+	public const ADD_RAW_PACKET_FILTER = 6;
+	public const SEND_RAW = 7;
 
-	public function getServerId() : ?int;
+	private function __construct(){
+
+	}
 }

@@ -25,14 +25,13 @@ declare(strict_types=1);
 
 namespace altay\netherlib;
 
-use altay\netherlib\utils\PacketSerializerInterface;
 use pocketmine\utils\BinaryDataException;
 use pocketmine\utils\BinaryStream;
 use function bin2hex;
 use function hex2bin;
 use function strlen;
 
-final class PacketSerializer extends BinaryStream implements PacketSerializerInterface{
+final class PacketSerializer extends BinaryStream{
 
 	public const MAX_PAYLOAD_LENGTH = 0xffff;
 

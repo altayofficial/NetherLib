@@ -26,13 +26,12 @@ declare(strict_types=1);
 namespace altay\netherlib;
 
 use altay\netherlib\sdp\AnswerRewriter;
-use altay\netherlib\transport\TransportSession;
 use Webrtc\DataChannel\Enum\State;
 use Webrtc\DataChannel\RTCDataChannel;
 use Webrtc\SCTP\RTCSctpTransport;
 use Webrtc\Webrtc\RTCPeerConnection;
 
-final class NetherNetSession implements TransportSession{
+final class NetherNetSession{
 
 	public const RELIABLE_CHANNEL = "ReliableDataChannel";
 	public const UNRELIABLE_CHANNEL = "UnreliableDataChannel";

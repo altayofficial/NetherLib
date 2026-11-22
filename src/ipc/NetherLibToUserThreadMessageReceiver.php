@@ -25,15 +25,16 @@ declare(strict_types=1);
 
 namespace altay\netherlib\ipc;
 
+use altay\netherlib\ServerListener;
 use pocketmine\utils\Binary;
 
-final class TransportToMainThreadMessageReceiver{
+final class NetherLibToUserThreadMessageReceiver{
 
 	public function __construct(
 		private InterThreadChannelReader $channel
 	){}
 
-	public function handle(TransportToMainThreadEventHandler $handler) : bool{
+	public function handle(ServerListener $listener) : bool{
 		$message = $this->channel->read();
 		if($message === null){
 			return false;
@@ -42,7 +43,7 @@ final class TransportToMainThreadMessageReceiver{
 		$id = ord($message[0]);
 		$offset = 1;
 		switch($id){
-			case TransportEventId::SESSION_OPEN:
+			case EventId::SESSION_OPEN:
 				$sessionId = Binary::readLLong(substr($message, $offset, 8));
 				$offset += 8;
 				$addressLength = ord($message[$offset++]);
@@ -53,35 +54,35 @@ final class TransportToMainThreadMessageReceiver{
 				$publicKeyLength = Binary::readLShort(substr($message, $offset, 2));
 				$offset += 2;
 				$publicKey = $publicKeyLength > 0 ? substr($message, $offset, $publicKeyLength) : null;
-				$handler->handleSessionOpen($sessionId, $address, $port, $publicKey);
+				$listener->onSessionOpen($sessionId, $address, $port, $publicKey);
 				break;
-			case TransportEventId::SESSION_CLOSE:
+			case EventId::SESSION_CLOSE:
 				$sessionId = Binary::readLLong(substr($message, $offset, 8));
-				$handler->handleSessionClose($sessionId, substr($message, $offset + 8));
+				$listener->onSessionClose($sessionId, substr($message, $offset + 8));
 				break;
-			case TransportEventId::PACKET_RECEIVE:
+			case EventId::PACKET_RECEIVE:
 				$sessionId = Binary::readLLong(substr($message, $offset, 8));
-				$handler->handlePacketReceive($sessionId, substr($message, $offset + 8));
+				$listener->onPacketReceive($sessionId, substr($message, $offset + 8));
 				break;
-			case TransportEventId::PACKET_ACK:
+			case EventId::PACKET_ACK:
 				$sessionId = Binary::readLLong(substr($message, $offset, 8));
-				$handler->handlePacketAck($sessionId, Binary::readLLong(substr($message, $offset + 8, 8)));
+				$listener->onPacketAck($sessionId, Binary::readLLong(substr($message, $offset + 8, 8)));
 				break;
-			case TransportEventId::PING_UPDATE:
+			case EventId::PING_UPDATE:
 				$sessionId = Binary::readLLong(substr($message, $offset, 8));
-				$handler->handlePingUpdate($sessionId, Binary::readLInt(substr($message, $offset + 8, 4)));
+				$listener->onPingUpdate($sessionId, Binary::readLInt(substr($message, $offset + 8, 4)));
 				break;
-			case TransportEventId::RAW_PACKET_RECEIVE:
+			case EventId::RAW_PACKET_RECEIVE:
 				$addressLength = ord($message[$offset++]);
 				$address = substr($message, $offset, $addressLength);
 				$offset += $addressLength;
 				$port = Binary::readLShort(substr($message, $offset, 2));
-				$handler->handleRawPacketReceive($address, $port, substr($message, $offset + 2));
+				$listener->onRawPacketReceive($address, $port, substr($message, $offset + 2));
 				break;
-			case TransportEventId::BANDWIDTH_UPDATE:
+			case EventId::BANDWIDTH_UPDATE:
 				$sent = Binary::readLLong(substr($message, $offset, 8));
 				$received = Binary::readLLong(substr($message, $offset + 8, 8));
-				$handler->handleBandwidthUpdate($sent, $received);
+				$listener->onBandwidthUpdate($sent, $received);
 				break;
 		}
 		return true;

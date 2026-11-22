@@ -44,11 +44,8 @@ use altay\netherlib\sdp\CandidateInference;
 use altay\netherlib\sdp\IceCandidate;
 use altay\netherlib\sdp\SessionDescription;
 use altay\netherlib\types\SignalErrorCode;
-use altay\netherlib\transport\AddressBlockingTransport;
-use altay\netherlib\transport\NameableTransport;
-use altay\netherlib\transport\RawPacketTransport;
-use altay\netherlib\transport\TransportException;
-use altay\netherlib\transport\TransportListener;
+use altay\netherlib\NetherNetException;
+use altay\netherlib\ServerListener;
 use altay\netherlib\utils\Uint64;
 use pocketmine\utils\Binary;
 use React\Dns\Config\Config as DnsConfig;
@@ -72,7 +69,7 @@ use Webrtc\Webrtc\Enum\ConnectionState;
 use Webrtc\Webrtc\RTCConfiguration;
 use Webrtc\Webrtc\RTCPeerConnection;
 
-final class NetherNetTransport implements NameableTransport, AddressBlockingTransport, RawPacketTransport{
+final class NetherNetServer implements ServerInterface{
 
 	public const DISCOVERY_PORT = 7551;
 
@@ -132,7 +129,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 	private array $endpointSockets = [];
 	/** @var string[] */
 	private array $extraEndpointAddresses = [];
-	private ?TransportListener $listener = null;
+	private ?ServerListener $listener = null;
 	private ?ServerIdentity $identity = null;
 	private bool $running = false;
 	private ?DtlsCertificateFiles $certificateFiles = null;
@@ -224,7 +221,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 			throw new \InvalidArgumentException("Invalid UDP port $port");
 		}
 		if($this->running){
-			throw new TransportException("The UDP port cannot change while the transport is running");
+			throw new NetherNetException("The UDP port cannot change while the transport is running");
 		}
 		$this->udpPort = $port;
 		$this->udpPortRequired = $required;
@@ -237,7 +234,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 	 */
 	public function addEndpointAddress(string $address) : void{
 		if($this->running){
-			throw new TransportException("Endpoint addresses cannot change while the transport is running");
+			throw new NetherNetException("Endpoint addresses cannot change while the transport is running");
 		}
 		$this->extraEndpointAddresses[] = $address;
 	}
@@ -246,9 +243,6 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		$this->signallingCredentials = $credentials;
 	}
 
-	public function getName() : string{
-		return "nethernet";
-	}
 
 	public function getAddressBook() : AddressBook{
 		return $this->addressBook;
@@ -260,11 +254,6 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 
 	public function getServerData() : ServerData{
 		return $this->serverData;
-	}
-
-	public function getServerId() : ?int{
-		//NetherNet identifies servers by their network ID, it has no separate RakNet-style server GUID
-		return null;
 	}
 
 	public function setName(string $name) : void{
@@ -288,17 +277,17 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		};
 	}
 
-	public function start(TransportListener $listener) : void{
+	public function start(ServerListener $listener) : void{
 		if($this->running){
-			throw new TransportException("NetherNet transport is already running");
+			throw new NetherNetException("NetherNet transport is already running");
 		}
 		$this->socket = $this->createDiscoverySocket();
 		if($this->socket === null && $this->endpointAddress === null && $this->extraEndpointAddresses === []){
-			throw new TransportException("NetherNet transport has no way to receive signalling: discovery is unavailable and no endpoint is configured");
+			throw new NetherNetException("NetherNet transport has no way to receive signalling: discovery is unavailable and no endpoint is configured");
 		}
 		try{
 			$this->udpMux = $this->createUdpMux();
-		}catch(TransportException $e){
+		}catch(NetherNetException $e){
 			if($this->udpPortRequired){
 				if($this->socket !== null){
 					socket_close($this->socket);
@@ -334,7 +323,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 			foreach($endpointAddresses as $address){
 				$this->startEndpoint($address);
 			}
-		}catch(TransportException $e){
+		}catch(NetherNetException $e){
 			//hmm, half a set of listeners is worse than none, the operator asked for all of them
 			$this->closeEndpoints();
 			throw $e;
@@ -345,12 +334,12 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 	 * Returns null if the discovery port is unusable. That only costs the server its LAN
 	 * advertisement, so the transport carries on with whatever signalling is left.
 	 *
-	 * @throws TransportException
+	 * @throws NetherNetException
 	 */
 	private function createDiscoverySocket() : ?\Socket{
 		$socket = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
 		if($socket === false){
-			throw new TransportException("Failed to create discovery socket: " . socket_strerror(socket_last_error()));
+			throw new NetherNetException("Failed to create discovery socket: " . socket_strerror(socket_last_error()));
 		}
 		@socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
 		@socket_set_option($socket, SOL_SOCKET, SO_BROADCAST, 1);
@@ -374,7 +363,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 	 * Binds the shared media port up front when the addresses it is needed on are known, so a taken
 	 * port is reported here rather than as joins that never find a path.
 	 *
-	 * @throws TransportException
+	 * @throws NetherNetException
 	 */
 	private function createUdpMux() : ?UdpMux{
 		if($this->udpPort === null){
@@ -392,7 +381,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 				$mux->listen($interface);
 			}catch(\RuntimeException $e){
 				$mux->close();
-				throw new TransportException("Failed to bind the NetherNet media port on $interface:$this->udpPort: " . $e->getMessage(), 0, $e);
+				throw new NetherNetException("Failed to bind the NetherNet media port on $interface:$this->udpPort: " . $e->getMessage(), 0, $e);
 			}
 		}
 		$mux->onUnrouted(function(string $data, string $peer) : void{
@@ -415,7 +404,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 	}
 
 	/**
-	 * @throws TransportException
+	 * @throws NetherNetException
 	 */
 	private function startEndpoint(string $address) : void{
 		//wait, Linux opens [::] dual stack, so it would also claim the IPv4 port the other listener
@@ -424,7 +413,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		try{
 			$socket = new SocketServer($address, $context);
 		}catch(\RuntimeException | \InvalidArgumentException $e){
-			throw new TransportException("Failed to bind endpoint signalling socket to $address: " . $e->getMessage(), 0, $e);
+			throw new NetherNetException("Failed to bind endpoint signalling socket to $address: " . $e->getMessage(), 0, $e);
 		}
 		//the body limit the handler enforces has to be applied while buffering as well, or React
 		//would happily hold post_max_size worth of offer per request before the handler ever runs
@@ -598,7 +587,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		foreach($this->sessions as $sessionId => $session){
 			if(!$session->isOpenNotified() && $now - $session->getCreatedAt() >= $this->handshakeTimeout){
 				$this->logger->debug("Dropping session $sessionId, its data channels did not open in time");
-				$this->closeSession($sessionId, "data channels did not open in time");
+				$this->endSession($sessionId, "data channels did not open in time");
 			}
 		}
 	}
@@ -607,7 +596,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		foreach($this->sessions as $sessionId => $session){
 			if($session->isOpenNotified() && $now - $session->getLastReceiveAt() >= self::SESSION_IDLE_TIMEOUT){
 				$this->logger->debug("Dropping session $sessionId, nothing received for " . self::SESSION_IDLE_TIMEOUT . " seconds");
-				$this->closeSession($sessionId, "timeout");
+				$this->endSession($sessionId, "timeout");
 			}
 		}
 	}
@@ -621,7 +610,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 			$received += $sessionReceived;
 		}
 		if(($sent !== 0 || $received !== 0) && $this->listener !== null){
-			$this->listener->onBandwidthUpdate($this, $sent, $received);
+			$this->listener->onBandwidthUpdate($sent, $received);
 		}
 	}
 
@@ -637,7 +626,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 			$ping = $session->getPing();
 			//hmm, -1 just means SCTP has not timed a chunk yet, nothing worth reporting
 			if($ping >= 0){
-				$this->listener->onPingUpdate($this, $session, $ping);
+				$this->listener->onPingUpdate($session->getId(), $ping);
 			}
 		}
 	}
@@ -659,10 +648,6 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		}
 	}
 
-	public function isSelfPacing() : bool{
-		//the UDP socket is non-blocking and the React loop returns immediately, so the driving loop must pace this
-		return false;
-	}
 
 	public function isRunning() : bool{
 		return $this->running;
@@ -707,6 +692,14 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		$this->running = false;
 	}
 
+	public function sendPacket(int $sessionId, string $payload, bool $immediate = false, ?int $receiptId = null) : void{
+		$this->sessions[$sessionId]?->sendPacket($payload, $immediate, $receiptId);
+	}
+
+	public function closeSession(int $sessionId) : void{
+		$this->sessions[$sessionId]?->disconnect();
+	}
+
 	public function getSession(int $connectionId) : ?NetherNetSession{
 		return $this->sessions[$connectionId] ?? null;
 	}
@@ -738,7 +731,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		}
 		foreach($this->rawPacketFilters as $pattern){
 			if(preg_match($pattern, $data) > 0){
-				$this->listener->onRawPacketReceive($this, $address, (int) substr($peer, $colon + 1), $data);
+				$this->listener->onRawPacketReceive($address, (int) substr($peer, $colon + 1), $data);
 				return;
 			}
 		}
@@ -762,7 +755,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		}
 		foreach($this->sessions as $sessionId => $session){
 			if($session->getAddress() === $address || $session->getSignallingAddress() === $address){
-				$this->closeSession($sessionId, "address blocked");
+				$this->endSession($sessionId, "address blocked");
 			}
 		}
 	}
@@ -1106,16 +1099,16 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 			function(string $payload) use ($sessionId) : void{
 				$session = $this->sessions[$sessionId] ?? null;
 				if($session !== null){
-					$this->listener?->onPacketReceive($this, $session, $payload);
+					$this->listener?->onPacketReceive($session->getId(), $payload);
 				}
 			},
 			function(string $reason) use ($sessionId) : void{
-				$this->closeSession($sessionId, $reason);
+				$this->endSession($sessionId, $reason);
 			},
 			function(int $receiptId) use ($sessionId) : void{
 				$session = $this->sessions[$sessionId] ?? null;
 				if($session !== null){
-					$this->listener?->onPacketAck($this, $session, $receiptId);
+					$this->listener?->onPacketAck($session->getId(), $receiptId);
 				}
 			}
 		);
@@ -1148,7 +1141,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		$notifyOpen = function() use ($sessionId) : void{
 			$session = $this->sessions[$sessionId] ?? null;
 			if($session !== null && $session->isReady() && $session->markOpenNotified()){
-				$this->listener?->onSessionOpen($this, $session);
+				$this->listener?->onSessionOpen($session->getId(), $session->getAddress(), $session->getPort(), $session->getAuthenticatedPublicKey());
 				$session->flushPendingPackets();
 			}
 		};
@@ -1209,13 +1202,13 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		$session->setRemoteAddress($address, $port);
 	}
 
-	private function closeSession(int $sessionId, string $reason) : void{
+	private function endSession(int $sessionId, string $reason) : void{
 		$session = $this->sessions[$sessionId] ?? null;
 		if($session !== null){
 			unset($this->sessions[$sessionId]);
 			$this->logger->debug("Session $sessionId from " . $session->getAddress() . ":" . $session->getPort() . " closed after " . (time() - $session->getCreatedAt()) . "s: $reason");
 			$session->disconnect();
-			$this->listener?->onSessionClose($this, $session, $reason);
+			$this->listener?->onSessionClose($session->getId(), $reason);
 		}
 	}
 
@@ -1232,7 +1225,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 
 			}
 		}
-		$this->closeSession(self::sessionIdOf($connectionId), $reason);
+		$this->endSession(self::sessionIdOf($connectionId), $reason);
 	}
 
 	/**
@@ -1251,12 +1244,12 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 	}
 
 	/**
-	 * @throws TransportException
+	 * @throws NetherNetException
 	 */
 	public function dial(int $networkId) : NetherNetSession{
 		$target = $this->addressBook->lookup($networkId);
 		if($target === null){
-			throw new TransportException("Network $networkId has not been discovered");
+			throw new NetherNetException("Network $networkId has not been discovered");
 		}
 		[$address, $port] = $target;
 
@@ -1269,7 +1262,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 	}
 
 	/**
-	 * @throws TransportException
+	 * @throws NetherNetException
 	 */
 	public function dialEndpoint(string $baseUrl, ?EndpointClient $client = null) : NetherNetSession{
 		$client ??= new EndpointClient($this->networkId);
@@ -1297,11 +1290,11 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 
 	/**
 	 * @param \Closure(string) : SignalSink $makeSink
-	 * @throws TransportException
+	 * @throws NetherNetException
 	 */
 	private function startDial(int $networkId, string $address, int $port, \Closure $makeSink) : NetherNetSession{
 		if(!$this->running){
-			throw new TransportException("NetherNet transport is not running");
+			throw new NetherNetException("NetherNet transport is not running");
 		}
 
 		//the dialling side owns the connection ID, and the session ID is derived from it exactly as
@@ -1312,7 +1305,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 		try{
 			$connection = $this->createPeerConnection($connectionId);
 		}catch(\Throwable $e){
-			throw new TransportException("Failed to create peer connection: " . $e->getMessage(), 0, $e);
+			throw new NetherNetException("Failed to create peer connection: " . $e->getMessage(), 0, $e);
 		}
 
 		$sink = $makeSink($connectionId);
@@ -1347,7 +1340,7 @@ final class NetherNetTransport implements NameableTransport, AddressBlockingTran
 			$channel->on("open", function() use ($sessionId) : void{
 				$session = $this->sessions[$sessionId] ?? null;
 				if($session !== null && $session->isReady() && $session->markOpenNotified()){
-					$this->listener?->onSessionOpen($this, $session);
+					$this->listener?->onSessionOpen($session->getId(), $session->getAddress(), $session->getPort(), $session->getAuthenticatedPublicKey());
 					$session->flushPendingPackets();
 				}
 			});

@@ -7,7 +7,7 @@ namespace altay\netherlib\tests\endpoint;
 use altay\netherlib\endpoint\EndpointClient;
 use altay\netherlib\endpoint\EndpointHandler;
 use altay\netherlib\endpoint\EndpointStatus;
-use altay\netherlib\NetherNetTransport;
+use altay\netherlib\NetherNetServer;
 use altay\netherlib\ServerData;
 use altay\netherlib\tests\DiscardingLogger;
 use altay\netherlib\tests\RecordingListener;
@@ -33,8 +33,8 @@ final class EndpointRoundTripTest extends TestCase{
 	private const CLIENT_NETWORK = 444;
 	private const TIMEOUT = 30;
 
-	private ?NetherNetTransport $server = null;
-	private ?NetherNetTransport $client = null;
+	private ?NetherNetServer $server = null;
+	private ?NetherNetServer $client = null;
 	private ?SocketServer $socket = null;
 
 	protected function tearDown() : void{
@@ -51,7 +51,7 @@ final class EndpointRoundTripTest extends TestCase{
 		$logger = new DiscardingLogger();
 
 		$serverEvents = new RecordingListener();
-		$this->server = new NetherNetTransport($logger, self::SERVER_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::TRANSPORT_PORT);
+		$this->server = new NetherNetServer($logger, self::SERVER_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::TRANSPORT_PORT);
 		$this->server->start($serverEvents);
 
 		$this->socket = new SocketServer("127.0.0.1:" . self::HTTP_PORT);
@@ -59,7 +59,7 @@ final class EndpointRoundTripTest extends TestCase{
 
 		//the dialling side still needs a transport of its own to own the peer connection
 		$clientEvents = new RecordingListener();
-		$this->client = new NetherNetTransport($logger, self::CLIENT_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::CLIENT_PORT);
+		$this->client = new NetherNetServer($logger, self::CLIENT_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::CLIENT_PORT);
 		$this->client->start($clientEvents);
 
 		$session = $this->client->dialEndpoint("http://127.0.0.1:" . self::HTTP_PORT);
@@ -104,7 +104,7 @@ final class EndpointRoundTripTest extends TestCase{
 			$offer = (string) $request->getBody();
 			return new Response(503);
 		}))->listen($this->socket);
-		$this->client = new NetherNetTransport($logger, self::CLIENT_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::CLIENT_PORT);
+		$this->client = new NetherNetServer($logger, self::CLIENT_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::CLIENT_PORT);
 		$this->client->start(new RecordingListener());
 		$this->client->dialEndpoint("http://127.0.0.1:" . self::HTTP_PORT);
 		$deadline = microtime(true) + self::TIMEOUT;
@@ -114,7 +114,7 @@ final class EndpointRoundTripTest extends TestCase{
 		}
 		self::assertIsString($offer, "the dialling side never posted an offer");
 
-		$this->server = new NetherNetTransport($logger, self::SERVER_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::TRANSPORT_PORT);
+		$this->server = new NetherNetServer($logger, self::SERVER_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::TRANSPORT_PORT);
 		$this->server->start(new RecordingListener());
 		$request = new ServerRequest("POST", "http://203.0.113.9:19132/v1/join/" . self::CLIENT_NETWORK, [], $offer, "1.1", ["REMOTE_ADDR" => "127.0.0.1", "REMOTE_PORT" => 50000]);
 		$answer = null;
@@ -137,7 +137,7 @@ final class EndpointRoundTripTest extends TestCase{
 	public function testPingAnswersWithTheServerStatus() : void{
 		$logger = new DiscardingLogger();
 		$serverData = new ServerData("Altay", 2187, "1.26.50", "World", ServerData::GAME_TYPE_CREATIVE, 3, 10);
-		$this->server = new NetherNetTransport($logger, self::SERVER_NETWORK, $serverData, "127.0.0.1", self::TRANSPORT_PORT);
+		$this->server = new NetherNetServer($logger, self::SERVER_NETWORK, $serverData, "127.0.0.1", self::TRANSPORT_PORT);
 
 		$handler = new EndpointHandler($this->server, $logger);
 		$response = $handler(new \React\Http\Message\ServerRequest("GET", "http://127.0.0.1/v1/join"));
@@ -149,7 +149,7 @@ final class EndpointRoundTripTest extends TestCase{
 
 	public function testHeadIsAnsweredLikeAPing() : void{
 		$logger = new DiscardingLogger();
-		$this->server = new NetherNetTransport($logger, self::SERVER_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::TRANSPORT_PORT);
+		$this->server = new NetherNetServer($logger, self::SERVER_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::TRANSPORT_PORT);
 
 		$handler = new EndpointHandler($this->server, $logger);
 		$response = $handler(new \React\Http\Message\ServerRequest("HEAD", "http://127.0.0.1/v1/join"));
@@ -161,7 +161,7 @@ final class EndpointRoundTripTest extends TestCase{
 
 	public function testTransportServesTheEndpointItWasGivenAnAddressFor() : void{
 		$logger = new DiscardingLogger();
-		$this->server = new NetherNetTransport(
+		$this->server = new NetherNetServer(
 			$logger,
 			self::SERVER_NETWORK,
 			new ServerData("Altay", levelName: "World"),
@@ -192,7 +192,7 @@ final class EndpointRoundTripTest extends TestCase{
 	public function testTransportServesTheEndpointOnEveryAddressItWasGiven() : void{
 		self::requireIpv6Loopback();
 		$logger = new DiscardingLogger();
-		$this->server = new NetherNetTransport(
+		$this->server = new NetherNetServer(
 			$logger,
 			self::SERVER_NETWORK,
 			new ServerData("Altay", levelName: "World"),
@@ -246,7 +246,7 @@ final class EndpointRoundTripTest extends TestCase{
 		$logger = new DiscardingLogger();
 
 		$serverEvents = new RecordingListener();
-		$this->server = new NetherNetTransport(
+		$this->server = new NetherNetServer(
 			$logger,
 			self::SERVER_NETWORK,
 			new ServerData("Altay", levelName: "World"),
@@ -262,7 +262,7 @@ final class EndpointRoundTripTest extends TestCase{
 		$this->server->start($serverEvents);
 
 		$clientEvents = new RecordingListener();
-		$this->client = new NetherNetTransport($logger, self::CLIENT_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::CLIENT_PORT, iceInterfaces: [$media]);
+		$this->client = new NetherNetServer($logger, self::CLIENT_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::CLIENT_PORT, iceInterfaces: [$media]);
 		$this->client->start($clientEvents);
 
 		$session = $this->client->dialEndpoint("http://[::1]:" . self::HTTP_PORT);
@@ -344,7 +344,7 @@ final class EndpointRoundTripTest extends TestCase{
 
 	public function testClosesAConnectionThatOpensWithTls() : void{
 		$logger = new DiscardingLogger();
-		$this->server = new NetherNetTransport(
+		$this->server = new NetherNetServer(
 			$logger,
 			self::SERVER_NETWORK,
 			new ServerData("Altay", levelName: "World"),
@@ -377,7 +377,7 @@ final class EndpointRoundTripTest extends TestCase{
 
 	public function testRejectsBadRequests() : void{
 		$logger = new DiscardingLogger();
-		$this->server = new NetherNetTransport($logger, self::SERVER_NETWORK, new ServerData(), "127.0.0.1", self::TRANSPORT_PORT);
+		$this->server = new NetherNetServer($logger, self::SERVER_NETWORK, new ServerData(), "127.0.0.1", self::TRANSPORT_PORT);
 		$handler = new EndpointHandler($this->server, $logger);
 
 		self::assertSame(404, $handler(new \React\Http\Message\ServerRequest("POST", "http://127.0.0.1/nope"))->getStatusCode());

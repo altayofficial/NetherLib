@@ -25,7 +25,7 @@ declare(strict_types=1);
 
 namespace altay\netherlib\endpoint;
 
-use altay\netherlib\NetherNetTransport;
+use altay\netherlib\NetherNetServer;
 use altay\netherlib\Signal;
 use altay\netherlib\utils\Uint64;
 use Psr\Http\Message\ServerRequestInterface;
@@ -57,7 +57,7 @@ final class EndpointHandler{
 	 *                                         stands for; without one only literal addresses count
 	 */
 	public function __construct(
-		private NetherNetTransport $transport,
+		private NetherNetServer $transport,
 		private \Logger $logger,
 		private ?ResolverInterface $resolver = null
 	){}

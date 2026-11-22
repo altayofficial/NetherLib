@@ -5,13 +5,11 @@ declare(strict_types=1);
 namespace altay\netherlib\tests;
 
 use altay\netherlib\CallbackSignalSink;
-use altay\netherlib\NetherNetTransport;
+use altay\netherlib\NetherNetServer;
 use altay\netherlib\ServerData;
 use altay\netherlib\Signal;
 use altay\netherlib\types\SignalErrorCode;
-use altay\netherlib\transport\Transport;
-use altay\netherlib\transport\TransportListener;
-use altay\netherlib\transport\TransportSession;
+use altay\netherlib\ServerListener;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -23,7 +21,7 @@ final class IdentityPolicyTest extends TestCase{
 	private const PORT = 17561;
 	private const NETWORK = 333;
 
-	private ?NetherNetTransport $transport = null;
+	private ?NetherNetServer $transport = null;
 
 	protected function tearDown() : void{
 		$this->transport?->shutdown();
@@ -44,7 +42,7 @@ final class IdentityPolicyTest extends TestCase{
 	 * @param Signal[] $signals
 	 */
 	private function accept(bool $requireIdentity, ?bool $override, array &$signals) : void{
-		$this->transport = new NetherNetTransport(
+		$this->transport = new NetherNetServer(
 			new SilentLogger(),
 			self::NETWORK,
 			new ServerData("Altay", levelName: "World"),
@@ -103,18 +101,19 @@ final class SilentLogger implements \Logger{
 	public function logException(\Throwable $e, $trace = null){}
 }
 
-final class IgnoringListener implements TransportListener{
-	public function onSessionOpen(Transport $transport, TransportSession $session) : void{}
+final class IgnoringListener implements ServerListener{
 
-	public function onSessionClose(Transport $transport, TransportSession $session, string $reason) : void{}
+	public function onSessionOpen(int $sessionId, string $address, int $port, ?string $authenticatedPublicKey) : void{}
 
-	public function onPacketReceive(Transport $transport, TransportSession $session, string $payload) : void{}
+	public function onSessionClose(int $sessionId, string $reason) : void{}
 
-	public function onPacketAck(Transport $transport, TransportSession $session, int $receiptId) : void{}
+	public function onPacketReceive(int $sessionId, string $payload) : void{}
 
-	public function onPingUpdate(Transport $transport, TransportSession $session, int $pingMS) : void{}
+	public function onPacketAck(int $sessionId, int $receiptId) : void{}
 
-	public function onRawPacketReceive(Transport $transport, string $address, int $port, string $payload) : void{}
+	public function onPingUpdate(int $sessionId, int $pingMS) : void{}
 
-	public function onBandwidthUpdate(Transport $transport, int $bytesSentDiff, int $bytesReceivedDiff) : void{}
+	public function onRawPacketReceive(string $address, int $port, string $payload) : void{}
+
+	public function onBandwidthUpdate(int $bytesSentDiff, int $bytesReceivedDiff) : void{}
 }

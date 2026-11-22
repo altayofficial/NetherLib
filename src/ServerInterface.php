@@ -23,11 +23,24 @@
 
 declare(strict_types=1);
 
-namespace altay\netherlib\transport;
+namespace altay\netherlib;
 
-interface RawPacketTransport extends Transport{
+/**
+ * What a server can be told to do. NetherNetServer is the real one; the IPC receiver only needs this much of it.
+ */
+interface ServerInterface{
 
-	public function sendRaw(string $address, int $port, string $payload) : void;
+	public function sendPacket(int $sessionId, string $payload, bool $immediate = false, ?int $receiptId = null) : void;
+
+	public function closeSession(int $sessionId) : void;
+
+	public function setName(string $name) : void;
+
+	public function blockAddress(string $address, int $timeout = 300) : void;
+
+	public function unblockAddress(string $address) : void;
 
 	public function addRawPacketFilter(string $regex) : void;
+
+	public function sendRaw(string $address, int $port, string $payload) : void;
 }

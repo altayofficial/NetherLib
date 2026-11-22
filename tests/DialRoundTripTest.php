@@ -4,12 +4,10 @@ declare(strict_types=1);
 
 namespace altay\netherlib\tests;
 
-use altay\netherlib\NetherNetTransport;
+use altay\netherlib\NetherNetServer;
 use altay\netherlib\ServerData;
-use altay\netherlib\transport\Transport;
-use altay\netherlib\transport\TransportException;
-use altay\netherlib\transport\TransportListener;
-use altay\netherlib\transport\TransportSession;
+use altay\netherlib\NetherNetException;
+use altay\netherlib\ServerListener;
 use PHPUnit\Framework\TestCase;
 use Webrtc\STUN\UdpMux;
 
@@ -28,9 +26,9 @@ final class DialRoundTripTest extends TestCase{
 	private const DIAL_NETWORK = 222;
 	private const TIMEOUT = 30;
 
-	private ?NetherNetTransport $listening = null;
-	private ?NetherNetTransport $dialling = null;
-	private ?NetherNetTransport $secondDialling = null;
+	private ?NetherNetServer $listening = null;
+	private ?NetherNetServer $dialling = null;
+	private ?NetherNetServer $secondDialling = null;
 
 	protected function setUp() : void{
 		$this->requirePeerConnection();
@@ -46,11 +44,11 @@ final class DialRoundTripTest extends TestCase{
 		$logger = new DiscardingLogger();
 
 		$listeningEvents = new RecordingListener();
-		$this->listening = new NetherNetTransport($logger, self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
+		$this->listening = new NetherNetServer($logger, self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
 		$this->listening->start($listeningEvents);
 
 		$diallingEvents = new RecordingListener();
-		$this->dialling = new NetherNetTransport($logger, self::DIAL_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::DIAL_PORT);
+		$this->dialling = new NetherNetServer($logger, self::DIAL_NETWORK, new ServerData("Client", levelName: "-"), "127.0.0.1", self::DIAL_PORT);
 		$this->dialling->start($diallingEvents);
 
 		//discovery is not what is under test here, so the address is seeded directly
@@ -92,7 +90,7 @@ final class DialRoundTripTest extends TestCase{
 		$logger = new DiscardingLogger();
 
 		$listeningEvents = new RecordingListener();
-		$this->listening = new NetherNetTransport($logger, self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
+		$this->listening = new NetherNetServer($logger, self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
 		$this->listening->setUdpPort(self::SHARED_MEDIA_PORT);
 		$this->listening->start($listeningEvents);
 
@@ -100,7 +98,7 @@ final class DialRoundTripTest extends TestCase{
 		$events = [];
 		foreach([[self::DIAL_NETWORK, self::DIAL_PORT], [self::DIAL_NETWORK + 1, self::SECOND_DIAL_PORT]] as $index => [$networkId, $port]){
 			$events[$index] = new RecordingListener();
-			$transport = new NetherNetTransport($logger, $networkId, new ServerData("Client", levelName: "-"), "127.0.0.1", $port);
+			$transport = new NetherNetServer($logger, $networkId, new ServerData("Client", levelName: "-"), "127.0.0.1", $port);
 			$transport->start($events[$index]);
 			$transport->getAddressBook()->remember(self::LISTEN_NETWORK, "127.0.0.1", self::LISTEN_PORT, time());
 			$sessions[$index] = $transport->dial(self::LISTEN_NETWORK);
@@ -144,15 +142,15 @@ final class DialRoundTripTest extends TestCase{
 		self::assertNotFalse($squatter);
 		self::assertTrue(socket_bind($squatter, "127.0.0.1", self::SHARED_MEDIA_PORT));
 		try{
-			$this->listening = new NetherNetTransport(new DiscardingLogger(), self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
+			$this->listening = new NetherNetServer(new DiscardingLogger(), self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
 			$this->listening->setUdpPort(self::SHARED_MEDIA_PORT, required: false);
 			$this->listening->start(new RecordingListener());
 			self::assertTrue($this->listening->isRunning());
 			$this->listening->shutdown();
 
-			$this->listening = new NetherNetTransport(new DiscardingLogger(), self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
+			$this->listening = new NetherNetServer(new DiscardingLogger(), self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
 			$this->listening->setUdpPort(self::SHARED_MEDIA_PORT);
-			$this->expectException(TransportException::class);
+			$this->expectException(NetherNetException::class);
 			$this->listening->start(new RecordingListener());
 		}finally{
 			socket_close($squatter);
@@ -164,7 +162,7 @@ final class DialRoundTripTest extends TestCase{
 			self::markTestSkipped("the webrtc library cannot hand out unrouted datagrams");
 		}
 		$events = new RecordingListener();
-		$this->listening = new NetherNetTransport(new DiscardingLogger(), self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
+		$this->listening = new NetherNetServer(new DiscardingLogger(), self::LISTEN_NETWORK, new ServerData("Altay", levelName: "World"), "127.0.0.1", self::LISTEN_PORT);
 		$this->listening->setUdpPort(self::SHARED_MEDIA_PORT);
 		$this->listening->addRawPacketFilter('/^\xfe\xfd/');
 		$this->listening->start($events);
@@ -215,7 +213,7 @@ final class DiscardingLogger implements \Logger{
 	public function logException(\Throwable $e, $trace = null){}
 }
 
-final class RecordingListener implements TransportListener{
+final class RecordingListener implements ServerListener{
 
 	public bool $opened = false;
 	public ?int $sessionId = null;
@@ -224,22 +222,22 @@ final class RecordingListener implements TransportListener{
 	/** @var list<array{string, int, string}> */
 	public array $raw = [];
 
-	public function onSessionOpen(Transport $transport, TransportSession $session) : void{
+	public function onSessionOpen(int $sessionId, string $address, int $port, ?string $authenticatedPublicKey) : void{
 		$this->opened = true;
-		$this->sessionId = $session->getId();
+		$this->sessionId = $sessionId;
 	}
 
-	public function onSessionClose(Transport $transport, TransportSession $session, string $reason) : void{}
+	public function onSessionClose(int $sessionId, string $reason) : void{}
 
-	public function onPacketReceive(Transport $transport, TransportSession $session, string $payload) : void{
+	public function onPacketReceive(int $sessionId, string $payload) : void{
 		$this->packets[] = $payload;
 	}
 
-	public function onPacketAck(Transport $transport, TransportSession $session, int $receiptId) : void{}
-	public function onPingUpdate(Transport $transport, TransportSession $session, int $pingMS) : void{}
-	public function onRawPacketReceive(Transport $transport, string $address, int $port, string $payload) : void{
+	public function onPacketAck(int $sessionId, int $receiptId) : void{}
+	public function onPingUpdate(int $sessionId, int $pingMS) : void{}
+	public function onRawPacketReceive(string $address, int $port, string $payload) : void{
 		$this->raw[] = [$address, $port, $payload];
 	}
 
-	public function onBandwidthUpdate(Transport $transport, int $bytesSentDiff, int $bytesReceivedDiff) : void{}
+	public function onBandwidthUpdate(int $bytesSentDiff, int $bytesReceivedDiff) : void{}
 }
