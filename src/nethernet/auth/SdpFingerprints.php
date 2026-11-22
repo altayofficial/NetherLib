@@ -34,13 +34,21 @@ final class SdpFingerprints{
 	/**
 	 * Builds the canonical JSON payload covering the DTLS fingerprints of an SDP,
 	 * matching the format vanilla signs in the identity assertion.
+	 *
+	 * Returns null if the SDP has no fingerprints, or if any of its fingerprint lines isn't exactly
+	 * "<algorithm> <digest>".
 	 */
 	public static function canonicalPayload(string $sdp) : ?string{
-		if(preg_match_all('/^a=fingerprint:(\S+) (\S+)\s*$/m', $sdp, $matches, PREG_SET_ORDER) === 0){
+		if(preg_match_all('/^a=fingerprint:(.*)$/m', $sdp, $lines) === 0){
 			return null;
 		}
 		$parts = [];
-		foreach($matches as $match){
+		foreach($lines[1] as $line){
+			//a line skipped here could still be picked up by the sdp parser and trusted by dtls without
+			//ever being covered by the signature, so one malformed line rejects the whole thing
+			if(preg_match('/^(\S+) (\S+)\r?$/', $line, $match) !== 1){
+				return null;
+			}
 			$parts[] = '{"algorithm":' . json_encode($match[1]) . ',"digest":' . json_encode($match[2]) . '}';
 		}
 		return '{"fingerprint":[' . implode(",", $parts) . ']}';

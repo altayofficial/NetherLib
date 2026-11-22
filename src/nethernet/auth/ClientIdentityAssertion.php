@@ -207,7 +207,7 @@ final class ClientIdentityAssertion{
 	public function verify(string $sdp) : void{
 		$payload = SdpFingerprints::canonicalPayload($sdp);
 		if($payload === null){
-			throw new IdentityException("SDP does not contain DTLS fingerprints");
+			throw new IdentityException("SDP does not contain valid DTLS fingerprints");
 		}
 
 		$publicKey = self::publicKey($this->publicKeyBase64);

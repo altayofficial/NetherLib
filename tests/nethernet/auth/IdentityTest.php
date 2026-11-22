@@ -96,6 +96,24 @@ final class IdentityTest extends TestCase{
 		$assertion->verify($tampered);
 	}
 
+	public function testExtraFingerprintWithTrailingWordRejected() : void{
+		$offer = $this->buildClientOffer($this->fingerprint("cert"));
+		//the sdp parser would read this one as a plain sha-256 fingerprint, so it can't go unsigned
+		$offer .= "a=fingerprint:sha-256 " . $this->fingerprint("evil") . " x\r\n";
+		$assertion = ClientIdentityAssertion::fromSdp($offer);
+		self::assertNotNull($assertion);
+		$this->expectException(IdentityException::class);
+		$assertion->verify($offer);
+	}
+
+	public function testMalformedFingerprintLineHasNoCanonicalPayload() : void{
+		$fp = $this->fingerprint("cert");
+		self::assertNotNull(SdpFingerprints::canonicalPayload($this->sdp($fp)));
+		self::assertNull(SdpFingerprints::canonicalPayload($this->sdp("$fp x")));
+		self::assertNull(SdpFingerprints::canonicalPayload("a=fingerprint: sha-256 $fp\r\n"));
+		self::assertNull(SdpFingerprints::canonicalPayload("a=fingerprint:sha-256\t$fp\r\n"));
+	}
+
 	public function testExpiredTokenRejected() : void{
 		$this->expectException(IdentityException::class);
 		ClientIdentityAssertion::fromSdp($this->buildClientOffer($this->fingerprint("cert"), time() - 10));
