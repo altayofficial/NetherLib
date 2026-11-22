@@ -1,0 +1,70 @@
+<?php
+
+/*
+ *
+ *      _    _ _
+ *     / \  | | |_ __ _ _   _
+ *    / _ \ | | __/ _` | | | |
+ *   / ___ \| | || (_| | |_| |
+ *  /_/   \_\_|\__\__,_|\__, |
+ *                       |___/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Original work by the PocketMine Team.
+ * https://www.pocketmine.net/
+ *
+ * @author Altay Team
+ * @link https://github.com/altayofficial
+ */
+
+declare(strict_types=1);
+
+namespace altay\netherlib\endpoint;
+
+use altay\netherlib\Signal;
+use altay\netherlib\SignalSink;
+
+final class EndpointSignalSink implements SignalSink{
+
+	private ?Signal $reply = null;
+
+	/** @var \Closure(Signal) : void */
+	private \Closure $onReply;
+
+	/**
+	 * @param \Closure(Signal) : void $onReply called once, with the answer or the error
+	 * @param string|null $reachedAddress the address the player's request was made to, if it named one
+	 */
+	public function __construct(\Closure $onReply, private ?string $reachedAddress = null){
+		$this->onReply = $onReply;
+	}
+
+	public function getReachedAddress() : ?string{
+		return $this->reachedAddress;
+	}
+
+	public function supportsTrickle() : bool{
+		//an HTTP request is answered once, so a candidate signalled afterwards has nowhere to go
+		return false;
+	}
+
+	public function write(Signal $signal) : void{
+		if($signal->type === Signal::TYPE_CANDIDATE){
+			//the answer waits for gathering to finish, so these are already embedded in it
+			return;
+		}
+		if($this->reply !== null){
+			return;
+		}
+		$this->reply = $signal;
+		($this->onReply)($signal);
+	}
+
+	public function hasReplied() : bool{
+		return $this->reply !== null;
+	}
+}

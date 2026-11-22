@@ -23,13 +23,13 @@
 
 declare(strict_types=1);
 
-namespace altay\network\ipc;
+namespace altay\netherlib\ipc;
 
-use altay\network\transport\AddressBlockingTransport;
-use altay\network\transport\NameableTransport;
-use altay\network\transport\RawPacketTransport;
-use altay\network\transport\Transport;
-use altay\network\transport\TunableTransport;
+use altay\netherlib\transport\AddressBlockingTransport;
+use altay\netherlib\transport\NameableTransport;
+use altay\netherlib\transport\RawPacketTransport;
+use altay\netherlib\transport\Transport;
+use altay\netherlib\transport\TunableTransport;
 use pocketmine\utils\Binary;
 
 final class MainToTransportThreadMessageReceiver{

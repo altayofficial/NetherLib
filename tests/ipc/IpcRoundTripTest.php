@@ -2,18 +2,18 @@
 
 declare(strict_types=1);
 
-namespace altay\network\tests\ipc;
+namespace altay\netherlib\tests\ipc;
 
-use altay\network\ipc\InterThreadChannelReader;
-use altay\network\ipc\InterThreadChannelWriter;
-use altay\network\ipc\MainToTransportThreadMessageReceiver;
-use altay\network\ipc\MainToTransportThreadMessageSender;
-use altay\network\ipc\TransportToMainThreadEventHandler;
-use altay\network\ipc\TransportToMainThreadMessageReceiver;
-use altay\network\ipc\TransportToMainThreadMessageSender;
-use altay\network\transport\Transport;
-use altay\network\transport\TransportListener;
-use altay\network\transport\TransportSession;
+use altay\netherlib\ipc\InterThreadChannelReader;
+use altay\netherlib\ipc\InterThreadChannelWriter;
+use altay\netherlib\ipc\MainToTransportThreadMessageReceiver;
+use altay\netherlib\ipc\MainToTransportThreadMessageSender;
+use altay\netherlib\ipc\TransportToMainThreadEventHandler;
+use altay\netherlib\ipc\TransportToMainThreadMessageReceiver;
+use altay\netherlib\ipc\TransportToMainThreadMessageSender;
+use altay\netherlib\transport\Transport;
+use altay\netherlib\transport\TransportListener;
+use altay\netherlib\transport\TransportSession;
 use PHPUnit\Framework\TestCase;
 
 final class IpcRoundTripTest extends TestCase{

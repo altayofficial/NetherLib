@@ -1,0 +1,208 @@
+<?php
+
+/*
+ *
+ *      _    _ _
+ *     / \  | | |_ __ _ _   _
+ *    / _ \ | | __/ _` | | | |
+ *   / ___ \| | || (_| | |_| |
+ *  /_/   \_\_|\__\__,_|\__, |
+ *                       |___/
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Original work by the PocketMine Team.
+ * https://www.pocketmine.net/
+ *
+ * @author Altay Team
+ * @link https://github.com/altayofficial
+ */
+
+declare(strict_types=1);
+
+namespace altay\netherlib\endpoint;
+
+use altay\netherlib\NetherNetTransport;
+use altay\netherlib\Signal;
+use altay\netherlib\utils\Uint64;
+use Psr\Http\Message\ServerRequestInterface;
+use React\Dns\Resolver\ResolverInterface;
+use React\EventLoop\Loop;
+use React\Http\Message\Response;
+use React\Promise\Deferred;
+use React\Promise\PromiseInterface;
+use function ctype_digit;
+use function filter_var;
+use function is_int;
+use function is_string;
+use function preg_match;
+use function random_int;
+use function strlen;
+use function trim;
+use const FILTER_VALIDATE_IP;
+
+final class EndpointHandler{
+
+	public const MAX_BODY_LENGTH = 1048576;
+
+	private const NEGOTIATION_TIMEOUT = 15;
+
+	private const PATH_PATTERN = '#^/v1/join(?:/([0-9]+))?/?$#';
+
+	/**
+	 * @param ResolverInterface|null $resolver turns the host a player asked for into the address it
+	 *                                         stands for; without one only literal addresses count
+	 */
+	public function __construct(
+		private NetherNetTransport $transport,
+		private \Logger $logger,
+		private ?ResolverInterface $resolver = null
+	){}
+
+	/**
+	 * @return Response|PromiseInterface<Response>
+	 */
+	public function __invoke(ServerRequestInterface $request) : Response|PromiseInterface{
+		$path = $request->getUri()->getPath();
+		if(preg_match(self::PATH_PATTERN, $path, $match) !== 1){
+			return self::text(404, "Not found");
+		}
+		$networkId = $match[1] ?? "";
+
+		//HEAD is a GET without the body, and the server leaves the body off on its own
+		if(($request->getMethod() === "GET" || $request->getMethod() === "HEAD") && $networkId === ""){
+			return self::json(200, EndpointStatus::fromServerData($this->transport->getServerData())->toJson());
+		}
+		if($request->getMethod() !== "POST"){
+			return self::text(405, "Method not allowed");
+		}
+		if($networkId === ""){
+			return self::text(400, "Expected /v1/join/{networkID}");
+		}
+		if(!ctype_digit($networkId)){
+			return self::text(400, "Network ID must be uint64");
+		}
+		try{
+			$senderNetworkId = Uint64::toSignedInt($networkId);
+		}catch(\InvalidArgumentException){
+			return self::text(400, "Network ID must be uint64");
+		}
+
+		$offer = (string) $request->getBody();
+		if($offer === ""){
+			return self::text(400, "Missing SDP offer in request body");
+		}
+		if(strlen($offer) > self::MAX_BODY_LENGTH){
+			return self::text(413, "SDP offer is too large");
+		}
+
+		[$address, $port] = self::peer($request);
+		if($address !== "" && $this->transport->isBlocked($address)){
+			return self::text(403, "Forbidden");
+		}
+
+		$host = self::requestedHost($request);
+		if($host === null || filter_var($host, FILTER_VALIDATE_IP) !== false){
+			return $this->negotiate($networkId, $senderNetworkId, $offer, $address, $port, $host);
+		}
+		if($this->resolver === null){
+			return $this->negotiate($networkId, $senderNetworkId, $offer, $address, $port, null);
+		}
+		//ok so a lookup that fails only costs the player that one extra candidate, not the join
+		return $this->resolver->resolve($host)->then(
+			fn(string $resolved) : PromiseInterface => $this->negotiate($networkId, $senderNetworkId, $offer, $address, $port, $resolved),
+			fn() : PromiseInterface => $this->negotiate($networkId, $senderNetworkId, $offer, $address, $port, null)
+		);
+	}
+
+	/**
+	 * The host the player typed in, read off the request. That is the one address we know reaches
+	 * the server from where they are, which a server behind NAT has no other way to find out.
+	 * Anything that does not look like a hostname or an address is ignored, since it is player input.
+	 */
+	private static function requestedHost(ServerRequestInterface $request) : ?string{
+		//hmm, react fills the uri from the Host header, IPv6 still comes with its brackets on
+		$host = trim($request->getUri()->getHost(), "[]");
+		if($host === ""){
+			return null;
+		}
+		if(filter_var($host, FILTER_VALIDATE_IP) !== false){
+			return $host;
+		}
+		return preg_match('/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i', $host) === 1 ? $host : null;
+	}
+
+	/**
+	 * @return array{string, int} the peer's address and port, empty when the server could not name it
+	 */
+	private static function peer(ServerRequestInterface $request) : array{
+		$params = $request->getServerParams();
+		$address = $params["REMOTE_ADDR"] ?? null;
+		$port = $params["REMOTE_PORT"] ?? null;
+
+		return [
+			is_string($address) ? $address : "",
+			is_string($port) || is_int($port) ? (int) $port : 0
+		];
+	}
+
+	/**
+	 * @return PromiseInterface<Response>
+	 */
+	private function negotiate(string $networkId, int $senderNetworkId, string $offer, string $address, int $port, ?string $reachedAddress) : PromiseInterface{
+		//nothing in the request names the connection, so this side assigns the ID
+		$connectionId = (string) random_int(0, PHP_INT_MAX);
+
+		/** @var Deferred<Response> $deferred */
+		$deferred = new Deferred();
+		$sink = new EndpointSignalSink(function(Signal $reply) use ($deferred, $connectionId) : void{
+			if($reply->type === Signal::TYPE_ANSWER){
+				$deferred->resolve(self::sdp($reply->data));
+				return;
+			}
+			$this->logger->debug("Endpoint negotiation for connection $connectionId failed with code " . $reply->data);
+			$deferred->resolve(self::text(503, "Service unavailable"));
+		}, $reachedAddress);
+
+		$this->logger->debug("Endpoint offer from network $networkId at $address:$port, assigned connection $connectionId");
+		//signalling happens over HTTP, but the address is still the player's - bans, rate limits and
+		//logs all key off it, and without it every endpoint player looks like the same anonymous peer
+		$this->transport->acceptOffer(
+			new Signal(Signal::TYPE_OFFER, $connectionId, $offer),
+			$senderNetworkId,
+			$address,
+			$port,
+			$sink,
+			$this->transport->endpointRequiresIdentity(),
+			$this->transport->endpointTokenTrust()
+		);
+
+		if(!$sink->hasReplied()){
+			//negotiation runs on the transport's own tick, so nothing here would ever time it out
+			$timer = Loop::addTimer(self::NEGOTIATION_TIMEOUT, function() use ($deferred, $sink, $connectionId) : void{
+				if($sink->hasReplied()){
+					return;
+				}
+				$this->logger->debug("Endpoint negotiation for connection $connectionId timed out");
+				$deferred->resolve(self::text(504, "Timed out waiting for answer"));
+			});
+			$deferred->promise()->finally(static fn() => Loop::cancelTimer($timer));
+		}
+		return $deferred->promise();
+	}
+
+	private static function text(int $status, string $body) : Response{
+		return new Response($status, ["Content-Type" => "text/plain; charset=utf-8", "Connection" => "close"], $body);
+	}
+
+	private static function sdp(string $body) : Response{
+		return new Response(200, ["Content-Type" => "application/sdp", "Connection" => "close"], $body);
+	}
+
+	private static function json(int $status, string $body) : Response{
+		return new Response($status, ["Content-Type" => "application/json", "Connection" => "close"], $body);
+	}
+}

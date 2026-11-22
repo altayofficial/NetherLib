@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace altay\network\tests\utils;
+namespace altay\netherlib\tests\utils;
 
-use altay\network\utils\Uint64;
+use altay\netherlib\utils\Uint64;
 use PHPUnit\Framework\TestCase;
 
 final class Uint64Test extends TestCase{

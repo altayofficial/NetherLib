@@ -23,7 +23,7 @@
 
 declare(strict_types=1);
 
-namespace altay\network\ipc;
+namespace altay\netherlib\ipc;
 
 final class TransportEventId{
 

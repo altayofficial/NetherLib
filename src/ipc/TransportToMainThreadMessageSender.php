@@ -23,11 +23,11 @@
 
 declare(strict_types=1);
 
-namespace altay\network\ipc;
+namespace altay\netherlib\ipc;
 
-use altay\network\transport\Transport;
-use altay\network\transport\TransportListener;
-use altay\network\transport\TransportSession;
+use altay\netherlib\transport\Transport;
+use altay\netherlib\transport\TransportListener;
+use altay\netherlib\transport\TransportSession;
 use pocketmine\utils\Binary;
 
 final class TransportToMainThreadMessageSender implements TransportListener{

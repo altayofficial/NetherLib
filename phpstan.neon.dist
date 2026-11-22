@@ -3,5 +3,4 @@ parameters:
 	paths:
 		- src
 	excludePaths:
-		- src/raknet
 	treatPhpDocTypesAsCertain: false

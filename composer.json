@@ -1,6 +1,6 @@
 {
-  "name": "altayofficial/network",
-  "description": "Central network library for Altay family written in PHP",
+  "name": "altayofficial/netherlib",
+  "description": "NetherNet server and client for Minecraft: Bedrock Edition, written in PHP",
   "type": "library",
   "license": "GPL-3.0-or-later",
   "require": {
@@ -26,12 +26,12 @@
   },
   "autoload": {
     "psr-4": {
-      "altay\\network\\": "src/"
+      "altay\\netherlib\\": "src/"
     }
   },
   "autoload-dev": {
     "psr-4": {
-      "altay\\network\\tests\\": "tests/"
+      "altay\\netherlib\\tests\\": "tests/"
     }
   },
   "suggest": {

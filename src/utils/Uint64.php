@@ -23,7 +23,7 @@
 
 declare(strict_types=1);
 
-namespace altay\network\utils;
+namespace altay\netherlib\utils;
 
 use pocketmine\utils\Binary;
 

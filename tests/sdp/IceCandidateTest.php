@@ -1,0 +1,163 @@
+<?php
+
+declare(strict_types=1);
+
+namespace altay\netherlib\tests\sdp;
+
+use altay\netherlib\sdp\IceCandidate;
+use PHPUnit\Framework\TestCase;
+
+final class IceCandidateTest extends TestCase{
+
+	public function testParsesHostCandidate() : void{
+		$candidate = IceCandidate::parse("a=candidate:1467250027 1 udp 2122260223 192.168.0.196 46243 typ host");
+
+		self::assertNotNull($candidate);
+		self::assertSame("1467250027", $candidate->foundation);
+		self::assertSame("udp", $candidate->protocol);
+		self::assertSame(2122260223, $candidate->priority);
+		self::assertSame("192.168.0.196", $candidate->address);
+		self::assertSame(46243, $candidate->port);
+		self::assertSame("host", $candidate->type);
+		self::assertNull($candidate->relatedAddress);
+	}
+
+	public function testParsesWithoutAttributePrefix() : void{
+		self::assertNotNull(IceCandidate::parse("candidate:1 1 udp 100 10.0.0.1 5000 typ host"));
+	}
+
+	public function testParsesRelatedAddress() : void{
+		$candidate = IceCandidate::parse("candidate:4 1 udp 1686052607 1.2.3.4 51772 typ srflx raddr 192.168.0.196 rport 51772");
+
+		self::assertNotNull($candidate);
+		self::assertSame("192.168.0.196", $candidate->relatedAddress);
+		self::assertSame(51772, $candidate->relatedPort);
+	}
+
+	public function testRejectsNonCandidateLines() : void{
+		self::assertNull(IceCandidate::parse("a=ice-ufrag:4ZcD"));
+		self::assertNull(IceCandidate::parse("candidate:1 1 udp 100 10.0.0.1 5000 host"));
+		self::assertNull(IceCandidate::parse("candidate:1 1 udp notanumber 10.0.0.1 5000 typ host"));
+	}
+
+	public function testFormatsLikeVanilla() : void{
+		$host = IceCandidate::parse("a=candidate:1467250027 1 udp 2122260223 192.168.0.196 46243 typ host");
+		self::assertNotNull($host);
+		self::assertSame(
+			"candidate:1467250027 1 udp 2122260223 192.168.0.196 46243 typ host generation 0 ufrag 4ZcD network-id 0 network-cost 0",
+			$host->format(0, "4ZcD")
+		);
+
+		$srflx = IceCandidate::parse("candidate:4 1 udp 1686052607 1.2.3.4 51772 typ srflx raddr 192.168.0.196 rport 51772");
+		self::assertNotNull($srflx);
+		self::assertSame(
+			"candidate:4 1 udp 1686052607 1.2.3.4 51772 typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag 4ZcD network-id 2 network-cost 0",
+			$srflx->format(2, "4ZcD")
+		);
+	}
+
+	public function testFormatForcesComponentOne() : void{
+		$candidate = IceCandidate::parse("candidate:1 2 udp 100 10.0.0.1 5000 typ host");
+
+		self::assertNotNull($candidate);
+		self::assertStringStartsWith("candidate:1 1 udp", $candidate->format(0, "x"));
+	}
+
+	public function testFormatOmitsRelatedAddressForHost() : void{
+		$candidate = new IceCandidate("1", "udp", 100, "10.0.0.1", 5000, "host", "10.0.0.2", 6000);
+
+		self::assertStringNotContainsString("raddr", $candidate->format(0, "x"));
+	}
+
+	public function testFormatAlwaysGivesReflexiveCandidatesABaseAddress() : void{
+		$v4 = new IceCandidate("4", "udp", 100, "1.2.3.4", 5000, "srflx");
+		self::assertStringContainsString("typ srflx raddr 0.0.0.0 rport 0 generation", $v4->format(0, "x"));
+
+		$v6 = new IceCandidate("5", "udp", 100, "2001:db8::1", 5000, "relay", "fd00::2", 6000);
+		self::assertStringContainsString("typ relay raddr :: rport 0 generation", $v6->format(0, "x"));
+	}
+
+	public function testRelatedAddressIsZeroedInSdpLines() : void{
+		self::assertSame(
+			"a=candidate:4 1 udp 1686052607 1.2.3.4 51772 typ srflx raddr 0.0.0.0 rport 0 generation 0 network-id 1",
+			IceCandidate::withoutRelatedAddress("a=candidate:4 1 udp 1686052607 1.2.3.4 51772 typ srflx raddr 192.168.0.196 rport 51772 generation 0 network-id 1")
+		);
+		self::assertSame(
+			"a=candidate:4 1 udp 1686052607 1.2.3.4 51772 typ srflx raddr 0.0.0.0 rport 0\r",
+			IceCandidate::withoutRelatedAddress("a=candidate:4 1 udp 1686052607 1.2.3.4 51772 typ srflx\r")
+		);
+		$host = "a=candidate:1 1 udp 2122260223 192.168.0.196 46243 typ host";
+		self::assertSame($host, IceCandidate::withoutRelatedAddress($host));
+		self::assertSame("a=ice-ufrag:yhbK", IceCandidate::withoutRelatedAddress("a=ice-ufrag:yhbK"));
+	}
+
+	public function testSdpValueDropsThePrefix() : void{
+		$candidate = IceCandidate::parse("a=candidate:1467250027 1 udp 2122260223 192.168.0.196 46243 typ host generation 0 ufrag 4ZcD");
+
+		self::assertNotNull($candidate);
+		self::assertSame("1467250027 1 udp 2122260223 192.168.0.196 46243 typ host", $candidate->toSdpValue());
+	}
+
+	public function testSdpValueKeepsRelatedAddress() : void{
+		$candidate = IceCandidate::parse("candidate:4 1 udp 168 1.2.3.4 51772 typ relay raddr 192.168.0.196 rport 51772");
+
+		self::assertNotNull($candidate);
+		self::assertSame("4 1 udp 168 1.2.3.4 51772 typ relay raddr 192.168.0.196 rport 51772", $candidate->toSdpValue());
+	}
+
+	public function testParseAllKeepsSdpOrder() : void{
+		$sdp = implode("\r\n", [
+			"v=0",
+			"a=ice-ufrag:4ZcD",
+			"a=candidate:1 1 udp 100 10.0.0.1 5000 typ host",
+			"a=candidate:2 1 tcp 90 10.0.0.2 5001 typ host",
+			"a=end-of-candidates"
+		]);
+
+		$candidates = IceCandidate::parseAll($sdp);
+		self::assertCount(2, $candidates);
+		self::assertSame("10.0.0.1", $candidates[0]->address);
+		self::assertSame("10.0.0.2", $candidates[1]->address);
+	}
+
+	/**
+	 * @dataProvider addressProvider
+	 */
+	public function testOnlyConnectableAddressesAreAccepted(string $address, bool $expected) : void{
+		$candidate = IceCandidate::parse("a=candidate:1 1 udp 100 $address 5000 typ host");
+
+		self::assertNotNull($candidate);
+		self::assertSame($expected, $candidate->hasConnectableAddress());
+	}
+
+	/**
+	 * @return array<string, array{string, bool}>
+	 */
+	public static function addressProvider() : array{
+		return [
+			"lan" => ["192.168.1.5", true],
+			"public" => ["8.8.8.8", true],
+			"public v6" => ["2001:db8::1", true],
+			"mdns" => ["8bf1d2a0.local", false],
+			"loopback" => ["127.0.0.1", false],
+			"loopback v6" => ["::1", false],
+			"link local" => ["169.254.1.2", false],
+			"multicast" => ["224.0.0.1", false],
+			"multicast v6" => ["ff02::1", false],
+			"link local v6" => ["fe80::1", false],
+			"unspecified" => ["0.0.0.0", false],
+			"unspecified v6" => ["::", false],
+			"broadcast" => ["255.255.255.255", false],
+			"v4 mapped lan" => ["::ffff:192.168.1.5", true],
+			"v4 mapped loopback" => ["::ffff:127.0.0.1", false],
+			"hostname" => ["example.com", false]
+		];
+	}
+
+	public function testPortOutOfRangeIsNotConnectable() : void{
+		$candidate = IceCandidate::parse("a=candidate:1 1 udp 100 10.0.0.1 0 typ host");
+
+		self::assertNotNull($candidate);
+		self::assertFalse($candidate->hasConnectableAddress());
+	}
+}

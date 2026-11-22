@@ -6,7 +6,7 @@
 		 failOnWarning="true"
 		 failOnRisky="true">
 	<testsuites>
-		<testsuite name="Network">
+		<testsuite name="NetherLib">
 			<directory>tests</directory>
 		</testsuite>
 	</testsuites>

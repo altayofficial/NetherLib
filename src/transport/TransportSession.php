@@ -23,7 +23,7 @@
 
 declare(strict_types=1);
 
-namespace altay\network\transport;
+namespace altay\netherlib\transport;
 
 interface TransportSession{
 
