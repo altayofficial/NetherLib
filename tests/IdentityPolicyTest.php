@@ -31,7 +31,7 @@ final class IdentityPolicyTest extends TestCase{
 		return "v=0\r\n" .
 			"o=- 1 2 IN IP4 127.0.0.1\r\n" .
 			"s=-\r\nt=0 0\r\n" .
-			"a=ice-ufrag:abcd\r\na=ice-pwd:0123456789abcdef0123\r\n" .
+			"a=ice-ufrag:abcd\r\na=ice-pwd:0123456789abcdef01234567\r\n" .
 			"a=fingerprint:sha-256 " . strtoupper(implode(":", str_split(hash("sha256", "cert"), 2))) . "\r\n" .
 			"a=setup:actpass\r\n" .
 			"m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" .
@@ -68,12 +68,24 @@ final class IdentityPolicyTest extends TestCase{
 	}
 
 	public function testUnsignedOfferIsAcceptedWhenIdentityIsNotRequired() : void{
+		if(!extension_loaded("datachannel")){
+			self::markTestSkipped("ext-datachannel is not loaded");
+		}
 		$signals = [];
 		$this->accept(false, null, $signals);
 
+		//the answer comes out of the peer connection's own threads, so it takes a few ticks to show up
+		$deadline = microtime(true) + 5;
+		while(microtime(true) < $deadline && $signals === []){
+			$this->transport?->tick();
+			usleep(10000);
+		}
+
+		self::assertNotSame([], $signals, "the offer was never answered");
 		foreach($signals as $signal){
 			self::assertNotSame(Signal::TYPE_ERROR, $signal->type, "the offer was turned away: " . $signal->data);
 		}
+		self::assertSame(Signal::TYPE_ANSWER, $signals[0]->type);
 	}
 
 	public function testTheSignallingChannelCanHoldItsPeersToADifferentPolicy() : void{
@@ -112,8 +124,6 @@ final class IgnoringListener implements ServerListener{
 	public function onPacketAck(int $sessionId, int $receiptId) : void{}
 
 	public function onPingUpdate(int $sessionId, int $pingMS) : void{}
-
-	public function onRawPacketReceive(string $address, int $port, string $payload) : void{}
 
 	public function onBandwidthUpdate(int $bytesSentDiff, int $bytesReceivedDiff) : void{}
 }

@@ -25,7 +25,7 @@ declare(strict_types=1);
 
 namespace altay\netherlib\auth;
 
-use altay\dtls\OpenSslConfig;
+use altay\netherlib\utils\OpenSslConfig;
 
 final class ServerIdentity{
 

@@ -4,24 +4,24 @@
   "type": "library",
   "license": "GPL-3.0-or-later",
   "require": {
-    "php": "^8.1",
-    "ext-sockets": "*",
-    "ext-openssl": "*",
+    "php": "^8.3",
+    "ext-datachannel": "^0.1.0",
     "ext-gmp": "*",
+    "ext-openssl": "*",
+    "ext-sockets": "*",
     "altayofficial/binaryutils": "^0.2.8",
     "altayofficial/log": "^0.4.1",
     "psr/log": "^3.0",
-    "react/event-loop": "^1.5"
+    "react/event-loop": "^1.5",
+    "react/http": "^1.11"
   },
   "require-dev": {
     "phpunit/phpunit": "^10.5",
-    "phpstan/phpstan": "^2.0",
-    "altayofficial/webrtc": "^1.9.5",
-    "react/http": "^1.11"
+    "phpstan/phpstan": "^2.0"
   },
   "config": {
     "platform": {
-      "php": "8.1.0"
+      "php": "8.3.0"
     }
   },
   "autoload": {
@@ -33,10 +33,6 @@
     "psr-4": {
       "altay\\netherlib\\tests\\": "tests/"
     }
-  },
-  "suggest": {
-    "altayofficial/webrtc": "Required for the NetherNet transport",
-    "react/http": "Required for NetherNet endpoint signalling over HTTP"
   },
   "scripts": {
     "test": "phpunit",

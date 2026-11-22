@@ -25,11 +25,9 @@ declare(strict_types=1);
 
 namespace altay\netherlib;
 
+use altay\netherlib\rtc\RtcChannel;
+use altay\netherlib\rtc\RtcPeer;
 use altay\netherlib\sdp\AnswerRewriter;
-use Webrtc\DataChannel\Enum\State;
-use Webrtc\DataChannel\RTCDataChannel;
-use Webrtc\SCTP\RTCSctpTransport;
-use Webrtc\Webrtc\RTCPeerConnection;
 
 final class NetherNetSession{
 
@@ -61,8 +59,8 @@ final class NetherNetSession{
 	private int $remotePort;
 	private bool $openNotified = false;
 	private ?string $authenticatedPublicKey = null;
-	private ?RTCDataChannel $reliableChannel = null;
-	private ?RTCDataChannel $unreliableChannel = null;
+	private ?RtcChannel $reliableChannel = null;
+	private ?RtcChannel $unreliableChannel = null;
 	private MessageAssembler $reliableAssembler;
 	private MessageAssembler $unreliableAssembler;
 	/** @var string[] */
@@ -72,6 +70,9 @@ final class NetherNetSession{
 	private int $bytesReceived = 0;
 	private int $createdAt;
 	private int $lastReceiveAt;
+	/** What the connection had received the last time anyone looked, game data or not */
+	private int $lastTransportBytes = 0;
+	private int $lastTransportActivityAt;
 
 	/** @var \Closure(string) : void */
 	private \Closure $packetHandler;
@@ -81,7 +82,7 @@ final class NetherNetSession{
 	private \Closure $ackHandler;
 
 	public function __construct(
-		private RTCPeerConnection $connection,
+		private RtcPeer $peer,
 		private int $connectionId,
 		private string $address,
 		private int $port,
@@ -96,6 +97,7 @@ final class NetherNetSession{
 		$this->remotePort = $port;
 		$this->createdAt = time();
 		$this->lastReceiveAt = $this->createdAt;
+		$this->lastTransportActivityAt = $this->createdAt;
 		$this->reliableAssembler = new MessageAssembler(true, AnswerRewriter::MAX_MESSAGE_SIZE, self::MAX_PACKET_SIZE);
 		$this->unreliableAssembler = new MessageAssembler(false, AnswerRewriter::MAX_MESSAGE_SIZE, self::MAX_PACKET_SIZE);
 	}
@@ -144,12 +146,12 @@ final class NetherNetSession{
 	}
 
 	public function getPing() : int{
-		$srtt = SctpStatsReader::smoothedRoundTripTime($this->reliableChannel);
-		if($srtt === null){
+		$rtt = $this->peer->getRtt();
+		if($rtt === null){
 			return -1;
 		}
-		//SRTT is a full round trip in seconds, ping is conventionally one-way in milliseconds. weird right?
-		return (int) round($srtt * 1000 / 2);
+		//that's a full round trip, ping is conventionally one-way
+		return intdiv($rtt, 2);
 	}
 
 	public function isConnected() : bool{
@@ -164,36 +166,44 @@ final class NetherNetSession{
 	}
 
 	/**
-	 * Binds an inbound data channel to the session. Returns false when the peer opened a channel
-	 * the protocol does not define, one it has already opened, or one under the right name that
-	 * does not deliver the way that name promises.
+	 * Which of the two channels a data channel with these properties would be, or null when it's neither: a channel
+	 * the protocol doesn't define, or one under the right name that doesn't deliver the way that name promises.
 	 */
-	public function bindChannel(RTCDataChannel $channel) : bool{
-		if($channel->getProtocol() !== "" || $channel->getMaxPacketLifeTime() !== null){
-			return false;
+	public static function classifyChannel(string $label, string $protocol, bool $ordered, ?int $maxRetransmits, ?int $maxPacketLifeTime) : ?string{
+		if($protocol !== "" || $maxPacketLifeTime !== null){
+			return null;
 		}
-		if($channel->getLabel() === self::RELIABLE_CHANNEL){
-			//segments are only put back together in the order they were sent, so nothing may be lost or reordered
-			if($this->reliableChannel !== null || !$channel->isOrdered() || $channel->getMaxRetransmits() !== null){
-				return false;
-			}
+		//segments are only put back together in the order they were sent, so nothing may be lost or reordered
+		if($label === self::RELIABLE_CHANNEL && $ordered && $maxRetransmits === null){
+			return self::RELIABLE_CHANNEL;
+		}
+		if($label === self::UNRELIABLE_CHANNEL && !$ordered && $maxRetransmits === 0){
+			return self::UNRELIABLE_CHANNEL;
+		}
+		return null;
+	}
+
+	/**
+	 * Binds a data channel to the session. Returns false for a channel classifyChannel() doesn't accept, or one
+	 * already bound.
+	 */
+	public function bindChannel(RtcChannel $channel) : bool{
+		$kind = self::classifyChannel($channel->getLabel(), $channel->getProtocol(), $channel->isOrdered(), $channel->getMaxRetransmits(), $channel->getMaxPacketLifeTime());
+		if($kind === self::RELIABLE_CHANNEL && $this->reliableChannel === null){
 			$this->reliableChannel = $channel;
-			$channel->on("message", function(string $data) : void{
+			$channel->onMessage(function(string $data) : void{
 				$this->handleMessage($data, $this->reliableAssembler);
 			});
 			//losing the reliable channel means losing the session; the unreliable one carries
 			//nothing the game depends on, so its closure is handled by the connection state instead
-			$channel->on("close", function() : void{
+			$channel->onClose(function() : void{
 				$this->onClosed();
 			});
 			return true;
 		}
-		if($channel->getLabel() === self::UNRELIABLE_CHANNEL){
-			if($this->unreliableChannel !== null || $channel->isOrdered() || $channel->getMaxRetransmits() !== 0){
-				return false;
-			}
+		if($kind === self::UNRELIABLE_CHANNEL && $this->unreliableChannel === null){
 			$this->unreliableChannel = $channel;
-			$channel->on("message", function(string $data) : void{
+			$channel->onMessage(function(string $data) : void{
 				$this->handleMessage($data, $this->unreliableAssembler);
 			});
 			return true;
@@ -210,8 +220,8 @@ final class NetherNetSession{
 		return self::isChannelOpen($this->reliableChannel) && self::isChannelOpen($this->unreliableChannel);
 	}
 
-	private static function isChannelOpen(?RTCDataChannel $channel) : bool{
-		return $channel !== null && $channel->getReadyState() === State::Open;
+	private static function isChannelOpen(?RtcChannel $channel) : bool{
+		return $channel !== null && $channel->isOpen();
 	}
 
 	public function getCreatedAt() : int{
@@ -227,10 +237,13 @@ final class NetherNetSession{
 	 * world without sending a single game packet, but it keeps acking what we stream at it.
 	 */
 	public function getLastReceiveAt() : int{
-		//yeah, both data channels ride the same association, so the reliable one speaks for both
-		$transport = $this->reliableChannel?->getTransport();
-		$sctpReceivedAt = $transport instanceof RTCSctpTransport ? $transport->getLastPacketReceivedAt() : null;
-		return $sctpReceivedAt === null ? $this->lastReceiveAt : max($this->lastReceiveAt, (int) $sctpReceivedAt);
+		//anything at all arriving on the connection counts, so this has to be asked often enough to notice
+		$received = $this->peer->getBytesReceived();
+		if($received !== $this->lastTransportBytes){
+			$this->lastTransportBytes = $received;
+			$this->lastTransportActivityAt = time();
+		}
+		return max($this->lastReceiveAt, $this->lastTransportActivityAt);
 	}
 
 	public function isOpenNotified() : bool{
@@ -252,12 +265,8 @@ final class NetherNetSession{
 		return $this->openNotified = true;
 	}
 
-	public function getConnection() : RTCPeerConnection{
-		return $this->connection;
-	}
-
-	public function getReliableChannel() : ?RTCDataChannel{
-		return $this->reliableChannel;
+	public function getPeer() : RtcPeer{
+		return $this->peer;
 	}
 
 	private function handleMessage(string $data, MessageAssembler $assembler) : void{
@@ -369,10 +378,10 @@ final class NetherNetSession{
 		return false;
 	}
 
-	private function sendSegment(RTCDataChannel $channel, int $remaining, string $payload) : void{
+	private function sendSegment(RtcChannel $channel, int $remaining, string $payload) : void{
 		$segment = chr($remaining) . $payload;
 		try{
-			$channel->send($segment, true);
+			$channel->send($segment);
 		}catch(\RuntimeException $e){
 			//the channel can close between the check above and the write, and a peer disappearing
 			//mid-send must not take the caller with it
@@ -386,11 +395,7 @@ final class NetherNetSession{
 	public function disconnect() : void{
 		if($this->connected){
 			$this->connected = false;
-			try{
-				$this->connection->close();
-			}catch(\Throwable){
-
-			}
+			$this->peer->close();
 		}
 	}
 

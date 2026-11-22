@@ -78,14 +78,4 @@ final class Credentials{
 		return new self($servers, $expiresAt);
 	}
 
-	/**
-	 * @return array{iceServers: list<array{urls: string[], username?: string, credential?: string}>}
-	 */
-	public function toPeerConnectionConfiguration() : array{
-		$iceServers = [];
-		foreach($this->iceServers as $server){
-			$iceServers[] = $server->toConfiguration();
-		}
-		return ["iceServers" => $iceServers];
-	}
 }

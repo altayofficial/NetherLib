@@ -46,7 +46,12 @@ use altay\netherlib\sdp\SessionDescription;
 use altay\netherlib\types\SignalErrorCode;
 use altay\netherlib\NetherNetException;
 use altay\netherlib\ServerListener;
+use altay\netherlib\rtc\RtcChannel;
+use altay\netherlib\rtc\RtcContext;
+use altay\netherlib\rtc\RtcPeer;
 use altay\netherlib\utils\Uint64;
+use altay\datachannel\DataChannelException;
+use altay\datachannel\PeerConnection;
 use pocketmine\utils\Binary;
 use React\Dns\Config\Config as DnsConfig;
 use React\Dns\Resolver\Factory as DnsResolverFactory;
@@ -57,17 +62,6 @@ use React\Http\Middleware\LimitConcurrentRequestsMiddleware;
 use React\Http\Middleware\RequestBodyBufferMiddleware;
 use React\Socket\SocketServer;
 use function React\Promise\set_rejection_handler;
-use Webrtc\DataChannel\RTCDataChannel;
-use Webrtc\DataChannel\RTCDataChannelParameters;
-use Webrtc\ICE\Enum\CandidateType;
-use Webrtc\ICE\Enum\IceGatheringState;
-use Webrtc\ICE\Enum\TransportPolicyType;
-use Webrtc\ICE\RTCIceCandidate;
-use Webrtc\SDP\RTCSessionDescription;
-use Webrtc\STUN\UdpMux;
-use Webrtc\Webrtc\Enum\ConnectionState;
-use Webrtc\Webrtc\RTCConfiguration;
-use Webrtc\Webrtc\RTCPeerConnection;
 
 final class NetherNetServer implements ServerInterface{
 
@@ -107,10 +101,10 @@ final class NetherNetServer implements ServerInterface{
 	private int $maxNegotiationsPerAddress = self::MAX_NEGOTIATIONS_PER_ADDRESS;
 	private int $handshakeTimeout = self::DEFAULT_HANDSHAKE_TIMEOUT;
 	private ?int $udpPort = null;
-	private ?UdpMux $udpMux = null;
+	/** The one UDP port every player's media shares, once it's been checked that we can have it */
+	private ?int $sharedMediaPort = null;
 	private bool $udpPortRequired = true;
-	/** @var string[] patterns a datagram on the media port no agent claims has to match to reach the listener */
-	private array $rawPacketFilters = [];
+	private ?RtcContext $rtc = null;
 
 	private const ENDPOINT_MAX_CONCURRENT_REQUESTS = 64;
 
@@ -132,11 +126,11 @@ final class NetherNetServer implements ServerInterface{
 	private ?ServerListener $listener = null;
 	private ?ServerIdentity $identity = null;
 	private bool $running = false;
-	private ?DtlsCertificateFiles $certificateFiles = null;
+	private ?DtlsCertificate $certificate = null;
 	private ?string $discoveryResponse = null;
 	/** @var array<string, int> address => unix time the block expires */
 	private array $blockedAddresses = [];
-	/** @var array<string, array{connection: RTCPeerConnection, networkId: int, address: string, port: int, publicKey: ?string, createdAt: int, outgoing: bool, sink: SignalSink, offer: ?string, answer: ?string, candidates: list<string>, peerMaxMessageSize: ?int, lastSignalAt: float}> */
+	/** @var array<string, array{connection: RtcPeer, networkId: int, address: string, port: int, publicKey: ?string, createdAt: int, outgoing: bool, sink: SignalSink, offer: ?string, answer: ?string, candidates: list<string>, peerMaxMessageSize: ?int, lastSignalAt: float}> */
 	private array $pending = [];
 	/** @var NetherNetSession[] */
 	private array $sessions = [];
@@ -286,7 +280,7 @@ final class NetherNetServer implements ServerInterface{
 			throw new NetherNetException("NetherNet transport has no way to receive signalling: discovery is unavailable and no endpoint is configured");
 		}
 		try{
-			$this->udpMux = $this->createUdpMux();
+			$this->sharedMediaPort = $this->checkMediaPort();
 		}catch(NetherNetException $e){
 			if($this->udpPortRequired){
 				if($this->socket !== null){
@@ -299,8 +293,10 @@ final class NetherNetServer implements ServerInterface{
 		}
 		$this->listener = $listener;
 		$this->identity = $this->makeIdentity();
+		$this->rtc = new RtcContext($this->logger);
+		$this->rtc->setVerbose($this->verboseLogging);
 		try{
-			$this->certificateFiles = DtlsCertificateFiles::generate();
+			$this->certificate = DtlsCertificate::generate();
 		}catch(\RuntimeException $e){
 			//a per-connection key pair still works, it is just much more expensive to hand out
 			$this->logger->warning("Failed to prepare a shared DTLS certificate: " . $e->getMessage());
@@ -308,7 +304,7 @@ final class NetherNetServer implements ServerInterface{
 		$this->running = true;
 
 		set_rejection_handler(function(\Throwable $reason) : void{
-			$this->logger->debug("Ignoring unhandled WebRTC promise rejection: " . $reason->getMessage());
+			$this->logger->debug("Ignoring unhandled promise rejection: " . $reason->getMessage());
 		});
 
 		if($this->socket !== null){
@@ -365,30 +361,31 @@ final class NetherNetServer implements ServerInterface{
 	 *
 	 * @throws NetherNetException
 	 */
-	private function createUdpMux() : ?UdpMux{
+	private function checkMediaPort() : ?int{
 		if($this->udpPort === null){
 			return null;
 		}
-		$mux = new UdpMux($this->udpPort);
+		//libjuice only binds the port once the first player shows up. Taking it here for a moment means a port
+		//something else already holds is reported now, rather than as joins that never find a path
 		$interfaces = $this->iceInterfaces !== [] ? $this->iceInterfaces : $this->boundInterface();
 		if($interfaces === []){
-			//bound to every address, which ICE would only bind one at a time as players show up, and
-			//until then nothing else sharing the port (query) gets an answer
-			$interfaces = self::localIpv4Addresses();
+			$interfaces = ["0.0.0.0"];
 		}
 		foreach($interfaces as $interface){
-			try{
-				$mux->listen($interface);
-			}catch(\RuntimeException $e){
-				$mux->close();
-				throw new NetherNetException("Failed to bind the NetherNet media port on $interface:$this->udpPort: " . $e->getMessage(), 0, $e);
+			$ipv6 = str_contains($interface, ":");
+			$probe = @socket_create($ipv6 ? AF_INET6 : AF_INET, SOCK_DGRAM, SOL_UDP);
+			if($probe === false){
+				throw new NetherNetException("Failed to check the NetherNet media port: " . socket_strerror(socket_last_error()));
+			}
+			$bound = @socket_bind($probe, trim($interface, "[]"), $this->udpPort);
+			$error = $bound ? "" : socket_strerror(socket_last_error($probe));
+			socket_close($probe);
+			if(!$bound){
+				throw new NetherNetException("Failed to bind the NetherNet media port on $interface:$this->udpPort: $error");
 			}
 		}
-		$mux->onUnrouted(function(string $data, string $peer) : void{
-			$this->handleUnrouted($data, $peer);
-		});
 		$this->logger->info("NetherNet media shares udp/$this->udpPort");
-		return $mux;
+		return $this->udpPort;
 	}
 
 	private function makeIdentity() : ServerIdentity{
@@ -493,14 +490,16 @@ final class NetherNetServer implements ServerInterface{
 			$this->handleDatagram($buffer, $address, $port);
 		}
 
+		$this->rtc?->poll();
+
+		//the HTTP endpoint and the timers still live on React's loop
 		Loop::futureTick(static function() : void{
 			Loop::stop();
 		});
 		try{
 			Loop::run();
 		}catch(\Throwable $e){
-			//an unhandled promise rejection from a dying peer connection must not kill the whole transport
-			$this->logger->error("Error while running WebRTC event loop: " . $e->getMessage());
+			$this->logger->error("Error while running the event loop: " . $e->getMessage());
 		}
 
 		$now = time();
@@ -668,25 +667,16 @@ final class NetherNetServer implements ServerInterface{
 		}
 		$this->pending = [];
 
-		//flush the teardown ticks the closes above scheduled (SCTP stream resets, DTLS close);
-		//stray rejections during this are swallowed by the rejection handler set in start()
-		Loop::futureTick(static function() : void{
-			Loop::stop();
-		});
-		try{
-			Loop::run();
-		}catch(\Throwable $e){
-			$this->logger->debug("Error while draining WebRTC loop on shutdown: " . $e->getMessage());
-		}
+		//the closes above only queue their events, nobody is left to hear them
+		$this->rtc?->poll();
+		$this->rtc = null;
 
 		if($this->socket !== null){
 			socket_close($this->socket);
 			$this->socket = null;
 		}
-		$this->udpMux?->close();
-		$this->udpMux = null;
-		$this->certificateFiles?->delete();
-		$this->certificateFiles = null;
+		$this->sharedMediaPort = null;
+		$this->certificate = null;
 		set_rejection_handler(null);
 		$this->listener = null;
 		$this->running = false;
@@ -702,39 +692,6 @@ final class NetherNetServer implements ServerInterface{
 
 	public function getSession(int $connectionId) : ?NetherNetSession{
 		return $this->sessions[$connectionId] ?? null;
-	}
-
-	public function addRawPacketFilter(string $regex) : void{
-		$this->rawPacketFilters[] = $regex;
-	}
-
-	/**
-	 * Only reaches anyone while the media port is shared, since that is the one socket a stranger
-	 * can send arbitrary datagrams to. Query lives there that way when it is the server port.
-	 */
-	public function sendRaw(string $address, int $port, string $payload) : void{
-		$this->udpMux?->sendUnrouted($payload, str_contains($address, ":") ? "[$address]:$port" : "$address:$port");
-	}
-
-	private function handleUnrouted(string $data, string $peer) : void{
-		if($this->listener === null || $this->rawPacketFilters === []){
-			return;
-		}
-		$colon = strrpos($peer, ":");
-		if($colon === false){
-			return;
-		}
-		//react hands IPv6 peers over as "[addr]:port", the listener wants the bare address
-		$address = trim(substr($peer, 0, $colon), "[]");
-		if($this->isBlocked($address)){
-			return;
-		}
-		foreach($this->rawPacketFilters as $pattern){
-			if(preg_match($pattern, $data) > 0){
-				$this->listener->onRawPacketReceive($address, (int) substr($peer, $colon + 1), $data);
-				return;
-			}
-		}
 	}
 
 	public function blockAddress(string $address, int $timeout = 300) : void{
@@ -986,35 +943,39 @@ final class NetherNetServer implements ServerInterface{
 			"lastSignalAt" => microtime(true)
 		];
 
-		$connection->on("datachannel", function(RTCDataChannel $channel) use ($connectionId, $sessionId, $address, $port, $connection) : void{
+		$connection->onDataChannel(function(RtcChannel $channel) use ($connectionId, $sessionId, $address, $port, $connection) : void{
 			$this->handleDataChannel($connection, $channel, $connectionId, $sessionId, $address, $port);
 		});
 
 		//the aggregate connection state covers both the ICE and the DTLS transports. Without this a
 		//peer that goes away mid-handshake, or whose ICE later fails, would sit around until the
 		//pending negotiation times out - and an established session would never be torn down at all
-		$connection->on("connectionstatechange", function() use ($connection, $connectionId) : void{
-			$this->handleConnectionStateChange($connection, $connectionId);
+		$connection->onStateChange(function(int $state) use ($connection, $connectionId) : void{
+			$this->handleConnectionStateChange($connection, $connectionId, $state);
+		});
+
+		//libdatachannel answers on its own as soon as it has the offer
+		$connection->onLocalDescription(function(string $sdp, string $type) use ($connection, $connectionId, $sink) : void{
+			if($type === "answer"){
+				$this->publishDescription($connection, $connectionId, $sink, Signal::TYPE_ANSWER);
+			}
 		});
 
 		$offer = $signal->data;
-		$connection->setRemoteDescription(new RTCSessionDescription($offer, "offer"))
-			->then(function() use ($connection, $offer, $connectionId, $address) : void{
-				$this->addOfferedCandidates($connection, $offer, $connectionId);
-				$this->addInferredCandidates($connection, $offer, $connectionId, $address);
-			})
-			->then(fn() => $connection->createAnswer())
-			->then(fn(RTCSessionDescription $answer) => $connection->setLocalDescription($answer))
-			->then(function() use ($connection, $connectionId, $sink) : void{
-				$this->publishDescription($connection, $connectionId, $sink, Signal::TYPE_ANSWER);
-			})
-			->catch(function(\Throwable $e) use ($connectionId) : void{
-				$this->logger->error("NetherNet negotiation failed for connection $connectionId: " . $e->getMessage());
-				$this->dropConnection($connectionId, "negotiation failed", SignalErrorCode::FAILED_TO_CREATE_ANSWER);
-			});
+		try{
+			//libdatachannel would take the candidates in the offer as they are. They go through addCandidate()
+			//instead, which decides what an unauthenticated peer may point us at
+			$connection->setRemoteDescription(SessionDescription::withoutCandidates($offer), "offer");
+		}catch(DataChannelException $e){
+			$this->logger->error("NetherNet negotiation failed for connection $connectionId: " . $e->getMessage());
+			$this->dropConnection($connectionId, "negotiation failed", SignalErrorCode::FAILED_TO_SET_REMOTE_DESCRIPTION);
+			return;
+		}
+		$this->addOfferedCandidates($connection, $offer, $connectionId);
+		$this->addInferredCandidates($connection, $offer, $connectionId, $address);
 	}
 
-	private function addOfferedCandidates(RTCPeerConnection $connection, string $sdp, string $connectionId) : void{
+	private function addOfferedCandidates(RtcPeer $connection, string $sdp, string $connectionId) : void{
 		$added = 0;
 		foreach(IceCandidate::parseAll($sdp) as $candidate){
 			if($added >= self::MAX_REMOTE_CANDIDATES){
@@ -1032,7 +993,7 @@ final class NetherNetServer implements ServerInterface{
 	 * A client behind NAT that only ever gathered host candidates has none, and its checks stop at
 	 * the first NAT between the two, so the only path left is the one its signalling came over.
 	 */
-	private function addInferredCandidates(RTCPeerConnection $connection, string $sdp, string $connectionId, string $address) : void{
+	private function addInferredCandidates(RtcPeer $connection, string $sdp, string $connectionId, string $address) : void{
 		if(!$this->inferPeerCandidates || $address === ""){
 			return;
 		}
@@ -1043,12 +1004,12 @@ final class NetherNetServer implements ServerInterface{
 		}
 	}
 
-	private function connectionFor(string $connectionId) : ?RTCPeerConnection{
+	private function connectionFor(string $connectionId) : ?RtcPeer{
 		$entry = $this->pending[$connectionId] ?? null;
 		if($entry !== null){
 			return $entry["connection"];
 		}
-		return ($this->sessions[self::sessionIdOf($connectionId)] ?? null)?->getConnection();
+		return ($this->sessions[self::sessionIdOf($connectionId)] ?? null)?->getPeer();
 	}
 
 	private function handleCandidate(Signal $signal) : void{
@@ -1064,28 +1025,23 @@ final class NetherNetServer implements ServerInterface{
 		$this->addCandidate($connection, $candidate, $signal->connectionId);
 	}
 
-	private function addCandidate(RTCPeerConnection $connection, IceCandidate $candidate, string $connectionId) : bool{
+	private function addCandidate(RtcPeer $connection, IceCandidate $candidate, string $connectionId) : bool{
 		//a candidate names a host this server is about to send STUN checks to, and the peer that
 		//offered it is not authenticated, so it may not point at the loopback or link-local ranges
-		if(!$candidate->hasConnectableAddress()){
+		if(!$candidate->hasConnectableAddress() && !($candidate->isLoopback() && $this->isBoundToLoopback())){
 			$this->logger->debug("Ignoring candidate with unusable address " . $candidate->address . " for connection $connectionId");
 			return false;
 		}
 		try{
-			$parsed = RTCIceCandidate::parseSDP($candidate->toSdpValue());
-			//a candidate signalled on its own carries no media section, but the library insists on
-			//knowing which one it belongs to. NetherNet only ever negotiates the one, mid 0
-			$parsed->setSdpMid(0);
-			$parsed->setSdpMLineIndex(0);
-			$connection->addIceCandidate($parsed);
+			$connection->addRemoteCandidate("candidate:" . $candidate->toSdpValue());
 			return true;
-		}catch(\Throwable $e){
+		}catch(DataChannelException $e){
 			$this->logger->debug("Ignoring invalid ICE candidate for connection $connectionId: " . $e->getMessage());
 			return false;
 		}
 	}
 
-	private function openSession(RTCPeerConnection $connection, string $connectionId, int $sessionId, string $address, int $port) : NetherNetSession{
+	private function openSession(RtcPeer $connection, string $connectionId, int $sessionId, string $address, int $port) : NetherNetSession{
 		$session = $this->sessions[$sessionId] ?? null;
 		if($session !== null){
 			return $session;
@@ -1129,7 +1085,7 @@ final class NetherNetServer implements ServerInterface{
 		return $session;
 	}
 
-	private function handleDataChannel(RTCPeerConnection $connection, RTCDataChannel $channel, string $connectionId, int $sessionId, string $address, int $port) : void{
+	private function handleDataChannel(RtcPeer $connection, RtcChannel $channel, string $connectionId, int $sessionId, string $address, int $port) : void{
 		$session = $this->openSession($connection, $connectionId, $sessionId, $address, $port);
 		$this->logger->debug("Data channel \"" . $channel->getLabel() . "\" received for connection $connectionId");
 		if(!$session->bindChannel($channel)){
@@ -1150,7 +1106,7 @@ final class NetherNetServer implements ServerInterface{
 		if($session->isReady()){
 			$notifyOpen();
 		}else{
-			$channel->on("open", $notifyOpen);
+			$channel->onOpen($notifyOpen);
 		}
 	}
 
@@ -1159,10 +1115,9 @@ final class NetherNetServer implements ServerInterface{
 	 * then the session is either already gone or on its way out with a reason of its own, and
 	 * reporting this one over it would bury what actually happened.
 	 */
-	private function handleConnectionStateChange(RTCPeerConnection $connection, string $connectionId) : void{
-		$state = $connection->getConnectionState();
+	private function handleConnectionStateChange(RtcPeer $connection, string $connectionId, int $state) : void{
 		$session = $this->sessions[self::sessionIdOf($connectionId)] ?? null;
-		if($state === ConnectionState::connected){
+		if($state === PeerConnection::STATE_CONNECTED){
 			if($session !== null){
 				$this->useSelectedPair($connection, $session);
 				if($this->isBlocked($session->getAddress())){
@@ -1171,13 +1126,13 @@ final class NetherNetServer implements ServerInterface{
 			}
 			return;
 		}
-		if($state !== ConnectionState::failed && $state !== ConnectionState::closed){
+		if($state !== PeerConnection::STATE_FAILED && $state !== PeerConnection::STATE_CLOSED){
 			return;
 		}
 		if($session !== null && !$session->isConnected()){
 			return;
 		}
-		$this->dropConnection($connectionId, "peer connection " . $state->name);
+		$this->dropConnection($connectionId, "peer connection " . ($state === PeerConnection::STATE_FAILED ? "failed" : "closed"));
 	}
 
 	/**
@@ -1188,13 +1143,12 @@ final class NetherNetServer implements ServerInterface{
 	 * A relayed pair is left alone though, its address is the TURN server's and every player
 	 * relayed through it would end up looking like the same one.
 	 */
-	private function useSelectedPair(RTCPeerConnection $connection, NetherNetSession $session) : void{
-		$pairs = $connection->getSctp()?->getDtlsTransport()->getIceTransport()->getIceGatherer()->getIceConnection()->getNominated() ?? [];
-		$pair = reset($pairs);
-		if($pair === false || $pair->getRemoteCandidate()->getType() === CandidateType::relay){
+	private function useSelectedPair(RtcPeer $connection, NetherNetSession $session) : void{
+		$pair = $connection->getSelectedCandidatePair();
+		if($pair === null || $pair["remote"][2] === "relay"){
 			return;
 		}
-		[$address, $port] = $pair->getRemoteAddress();
+		[$address, $port] = $pair["remote"];
 		if($address === $session->getAddress() && $port === $session->getPort()){
 			return;
 		}
@@ -1325,19 +1279,31 @@ final class NetherNetServer implements ServerInterface{
 			"peerMaxMessageSize" => null,
 			"lastSignalAt" => microtime(true)
 		];
-		$connection->on("connectionstatechange", function() use ($connection, $connectionId) : void{
-			$this->handleConnectionStateChange($connection, $connectionId);
+		$connection->onStateChange(function(int $state) use ($connection, $connectionId) : void{
+			$this->handleConnectionStateChange($connection, $connectionId, $state);
+		});
+		$connection->onLocalDescription(function(string $sdp, string $type) use ($connection, $connectionId, $networkId, $sink) : void{
+			if($type === "offer"){
+				$this->logger->debug("Offering connection $connectionId to network $networkId");
+				$this->publishDescription($connection, $connectionId, $sink, Signal::TYPE_OFFER);
+			}
 		});
 
 		$session = $this->openSession($connection, $connectionId, $sessionId, $address, $port);
-		//the remote peer never opens channels on a connection it did not dial, so both are created here
+		//the remote peer never opens channels on a connection it did not dial, so both are created here, and the
+		//first one starts the offer
 		foreach([
-			new RTCDataChannelParameters(label: NetherNetSession::RELIABLE_CHANNEL, ordered: true),
-			new RTCDataChannelParameters(label: NetherNetSession::UNRELIABLE_CHANNEL, maxRetransmits: 0, ordered: false)
-		] as $parameters){
-			$channel = $connection->createDataChannel($parameters);
+			NetherNetSession::RELIABLE_CHANNEL => [],
+			NetherNetSession::UNRELIABLE_CHANNEL => ["unordered" => true, "maxRetransmits" => 0]
+		] as $label => $options){
+			try{
+				$channel = $connection->createDataChannel($label, $options);
+			}catch(DataChannelException $e){
+				$this->dropConnection($connectionId, "dial failed", SignalErrorCode::FAILED_TO_CREATE_OFFER);
+				throw new NetherNetException("Failed to open data channel $label: " . $e->getMessage(), 0, $e);
+			}
 			$session->bindChannel($channel);
-			$channel->on("open", function() use ($sessionId) : void{
+			$channel->onOpen(function() use ($sessionId) : void{
 				$session = $this->sessions[$sessionId] ?? null;
 				if($session !== null && $session->isReady() && $session->markOpenNotified()){
 					$this->listener?->onSessionOpen($session->getId(), $session->getAddress(), $session->getPort(), $session->getAuthenticatedPublicKey());
@@ -1345,17 +1311,6 @@ final class NetherNetServer implements ServerInterface{
 				}
 			});
 		}
-
-		$connection->createOffer()
-			->then(fn(RTCSessionDescription $offer) => $connection->setLocalDescription($offer))
-			->then(function() use ($connection, $connectionId, $networkId, $sink) : void{
-				$this->logger->debug("Offering connection $connectionId to network $networkId");
-				$this->publishDescription($connection, $connectionId, $sink, Signal::TYPE_OFFER);
-			})
-			->catch(function(\Throwable $e) use ($connectionId) : void{
-				$this->logger->error("NetherNet dial failed for connection $connectionId: " . $e->getMessage());
-				$this->dropConnection($connectionId, "dial failed", SignalErrorCode::FAILED_TO_CREATE_OFFER);
-			});
 
 		return $session;
 	}
@@ -1388,75 +1343,79 @@ final class NetherNetServer implements ServerInterface{
 		$answer = $signal->data;
 		//the negotiation is over; from here the session's own readiness deadline applies
 		unset($this->pending[$signal->connectionId]);
-		$connection->setRemoteDescription(new RTCSessionDescription($answer, "answer"))
-			->then(function() use ($connection, $answer, $signal) : void{
-				$this->addOfferedCandidates($connection, $answer, $signal->connectionId);
-			})
-			->catch(function(\Throwable $e) use ($signal) : void{
-				$this->logger->error("Failed to apply answer for connection $signal->connectionId: " . $e->getMessage());
-				$this->dropConnection($signal->connectionId, "invalid answer", SignalErrorCode::FAILED_TO_SET_REMOTE_DESCRIPTION);
-			});
+		try{
+			$connection->setRemoteDescription(SessionDescription::withoutCandidates($answer), "answer");
+		}catch(DataChannelException $e){
+			$this->logger->error("Failed to apply answer for connection $signal->connectionId: " . $e->getMessage());
+			$this->dropConnection($signal->connectionId, "invalid answer", SignalErrorCode::FAILED_TO_SET_REMOTE_DESCRIPTION);
+			return;
+		}
+		$this->addOfferedCandidates($connection, $answer, $signal->connectionId);
 	}
 
-	private function createPeerConnection(string $connectionId) : RTCPeerConnection{
+	private function createPeerConnection(string $connectionId) : RtcPeer{
+		if($this->rtc === null){
+			throw new NetherNetException("NetherNet server is not running");
+		}
 		if($this->signallingCredentials !== null && $this->signallingCredentials->isExpired()){
 			$this->logger->debug("Discarding expired NetherNet credentials");
 			$this->signallingCredentials = null;
 		}
-		//without an explicit list the library falls back to a public STUN server, which means an
-		//internet round trip per connection just to learn a reflexive candidate that a LAN peer can
-		//never use. Signalling on the discovery socket is local, so host candidates are all it wants.
-		$configuration = new RTCConfiguration($this->withSharedCertificate(
-			["iceServers" => $this->iceServers()]
-		));
-		if($this->relayOnly){
-			$configuration->iceSettings()->setTransportPolicy(TransportPolicyType::RELAY);
+		//no STUN server unless one was configured: signalling on the discovery socket is local, and a round trip
+		//to the internet per connection only buys a reflexive candidate a LAN peer can never use
+		$options = ["iceServers" => $this->iceServerUrls()];
+		if($this->certificate !== null){
+			//hmm, despite the names these take the PEM itself as well as a path
+			$options["certificatePemFile"] = $this->certificate->certificatePem;
+			$options["keyPemFile"] = $this->certificate->privateKeyPem;
 		}
-		//every local address the ICE agent gathers on costs a socket per player, and a machine
-		//usually has several no player can reach - container bridges, VPNs, a second segment
+		if($this->relayOnly){
+			$options["relayOnly"] = true;
+		}
+		//every address the ICE agent gathers on is one more candidate for the peer to try, and a machine usually
+		//has several no player can reach. libjuice only binds one address though, so a list comes down to its first
 		$interfaces = $this->iceInterfaces !== [] ? $this->iceInterfaces : $this->boundInterface();
 		if($interfaces !== []){
-			$configuration->iceSettings()->setInterfaces($interfaces);
+			$options["bindAddress"] = trim($interfaces[0], "[]");
 		}
-		//a player's media leaves from a port of its own, and by default that is whatever the system
-		//hands out, which cannot be forwarded through a firewall. A shared port or a range keeps it
-		//to ports the operator has opened
-		if($this->udpMux !== null){
-			$configuration->iceSettings()->setUdpMux($this->udpMux);
+		//a player's media leaves from a port of its own, and by default that is whatever the system hands out,
+		//which can't be forwarded through a firewall. A shared port or a range keeps it to ports the operator opened
+		if($this->sharedMediaPort !== null){
+			$options["enableIceUdpMux"] = true;
+			$options["portRangeBegin"] = $this->sharedMediaPort;
+			$options["portRangeEnd"] = $this->sharedMediaPort;
 		}elseif($this->icePortRange !== null){
-			try{
-				$configuration->iceSettings()->setIcePortRange($this->icePortRange[0], $this->icePortRange[1]);
-			}catch(\Throwable $e){
-				$this->logger->warning("Ignoring the configured NetherNet port range: " . $e->getMessage());
-				$this->icePortRange = null;
-			}
+			$options["portRangeBegin"] = $this->icePortRange[0];
+			$options["portRangeEnd"] = $this->icePortRange[1];
 		}
-		$connection = new RTCPeerConnection($configuration);
-		//the layers below check whether they have a logger before they build a line, and building one
-		//per datagram is not free, so a connection nobody is watching is given none at all. This has
-		//to happen before the transports are built, they take the logger they are given at birth
-		if($this->verboseLogging){
-			$connection->setLogger(new WebrtcLogger($this->logger, "Connection $connectionId: "));
+		//one byte of every message is the segment counter, see NetherNetSession
+		$options["maxMessageSize"] = AnswerRewriter::MAX_MESSAGE_SIZE;
+		try{
+			return $this->rtc->createPeer($options);
+		}catch(\ValueError | \TypeError $e){
+			throw new NetherNetException("Invalid peer connection configuration for connection $connectionId: " . $e->getMessage(), 0, $e);
 		}
-		return $connection;
 	}
 
 	/**
 	 * The configured ICE servers followed by whatever the signalling handed out, so neither side
-	 * loses the other's.
+	 * loses the other's, as the URLs libdatachannel takes.
 	 *
-	 * @return list<array{urls: string[], username?: string, credential?: string}>
+	 * @return list<string>
 	 */
-	private function iceServers() : array{
-		$servers = [];
+	private function iceServerUrls() : array{
+		$urls = [];
 		foreach([$this->credentials, $this->signallingCredentials] as $credentials){
-			if($credentials !== null && !$credentials->isExpired()){
-				foreach($credentials->toPeerConnectionConfiguration()["iceServers"] as $server){
-					$servers[] = $server;
+			if($credentials === null || $credentials->isExpired()){
+				continue;
+			}
+			foreach($credentials->iceServers as $server){
+				foreach($server->urls as $url){
+					$urls[] = $server->toUrl($url);
 				}
 			}
 		}
-		return $servers;
+		return $urls;
 	}
 
 	/**
@@ -1465,26 +1424,6 @@ final class NetherNetServer implements ServerInterface{
 	 *
 	 * @return string[]
 	 */
-	/**
-	 * Every IPv4 address on the machine, loopback too so query still answers locally. IPv6 stays
-	 * out: hmm, ICE keys those by their bracketed form, so binding them here would take the port
-	 * out from under the agent that asks for it later.
-	 *
-	 * @return string[]
-	 */
-	private static function localIpv4Addresses() : array{
-		$addresses = [];
-		foreach(net_get_interfaces() ?: [] as $interface){
-			foreach($interface["unicast"] ?? [] as $unicast){
-				$address = $unicast["address"] ?? null;
-				if(is_string($address) && filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false){
-					$addresses[$address] = $address;
-				}
-			}
-		}
-		return array_values($addresses);
-	}
-
 	private function boundInterface() : array{
 		if(self::isWildcard($this->bindAddress)){
 			return [];
@@ -1507,15 +1446,21 @@ final class NetherNetServer implements ServerInterface{
 	}
 
 	/**
-	 * @param mixed[] $configuration
-	 * @return mixed[]
+	 * A server that only listens on loopback can only ever be reached from this machine, so a loopback candidate is
+	 * the one kind that does make sense for it.
 	 */
-	private function withSharedCertificate(array $configuration) : array{
-		if($this->certificateFiles !== null){
-			$configuration["certificatePath"] = $this->certificateFiles->certificatePath;
-			$configuration["privateKeyPath"] = $this->certificateFiles->privateKeyPath;
+	private function isBoundToLoopback() : bool{
+		$interfaces = $this->iceInterfaces !== [] ? $this->iceInterfaces : $this->boundInterface();
+		if($interfaces === []){
+			return false;
 		}
-		return $configuration;
+		foreach($interfaces as $interface){
+			$packed = @inet_pton(trim($interface, "[]"));
+			if($packed === false || !($packed === inet_pton("::1") || (strlen($packed) === 4 && ord($packed[0]) === 127))){
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -1579,14 +1524,14 @@ final class NetherNetServer implements ServerInterface{
 	 * description only once gathering has finished, since the candidates in it are the only ones the
 	 * peer will ever see.
 	 */
-	private function publishDescription(RTCPeerConnection $connection, string $connectionId, SignalSink $sink, string $type) : void{
+	private function publishDescription(RtcPeer $connection, string $connectionId, SignalSink $sink, string $type) : void{
 		$send = function() use ($connection, $connectionId, $sink, $type) : void{
 			$local = $connection->getLocalDescription();
 			if($local === null){
 				$this->dropConnection($connectionId, "no local description", SignalErrorCode::FAILED_TO_SET_LOCAL_DESCRIPTION);
 				return;
 			}
-			$sdp = AnswerRewriter::conform($local->getSdp());
+			$sdp = AnswerRewriter::conform($local);
 			//a peer that gets its candidates trickled found this server on the local network, where
 			//the addresses an operator advertises to the internet are not the ones that reach it
 			if(!$sink->supportsTrickle()){
@@ -1611,7 +1556,7 @@ final class NetherNetServer implements ServerInterface{
 			}
 		};
 
-		if($sink->supportsTrickle() || $connection->getIceGatheringState() === IceGatheringState::complete){
+		if($sink->supportsTrickle() || $connection->isGatheringComplete()){
 			$send();
 			return;
 		}
@@ -1626,8 +1571,8 @@ final class NetherNetServer implements ServerInterface{
 			$this->logger->debug("Candidate gathering for connection $connectionId did not finish in time, sending what was gathered");
 			$send();
 		});
-		$connection->on("icegatheringstatechange", function() use ($connection, &$sent, $send, $timer) : void{
-			if($sent || $connection->getIceGatheringState() !== IceGatheringState::complete){
+		$connection->onGatheringComplete(function() use (&$sent, $send, $timer) : void{
+			if($sent){
 				return;
 			}
 			$sent = true;
@@ -1641,7 +1586,7 @@ final class NetherNetServer implements ServerInterface{
 	 * reflexive or relayed candidate costs a round trip to the STUN or TURN server, so it lands well
 	 * after the description does.
 	 */
-	private function trickleCandidates(RTCPeerConnection $connection, string $sdp, string $connectionId, SignalSink $sink) : void{
+	private function trickleCandidates(RtcPeer $connection, string $sdp, string $connectionId, SignalSink $sink) : void{
 		$ufrag = SessionDescription::attribute($sdp, "ice-ufrag");
 		if($ufrag === null){
 			$this->logger->debug("Local description for connection $connectionId has no ice-ufrag, not signalling candidates");
@@ -1664,25 +1609,20 @@ final class NetherNetServer implements ServerInterface{
 		};
 
 		$flush();
-		if($connection->getIceGatheringState() !== IceGatheringState::complete){
-			$connection->on("icegatheringstatechange", $flush);
+		if(!$connection->isGatheringComplete()){
+			$connection->onLocalCandidate(static fn(string $candidate) => $flush());
 		}
 	}
 
 	/**
-	 * The candidates the connection has gathered by now. The local description is a snapshot taken
-	 * when it was set, so the gatherer is the only place a candidate found later shows up.
+	 * The candidates the connection has gathered by now.
 	 *
 	 * @return IceCandidate[]
 	 */
-	private static function localCandidates(RTCPeerConnection $connection) : array{
-		$gatherer = $connection->getSctp()?->getDtlsTransport()->getIceTransport()->getIceGatherer();
-		if($gatherer === null){
-			return [];
-		}
+	private static function localCandidates(RtcPeer $connection) : array{
 		$candidates = [];
-		foreach($gatherer->getLocalCandidates() as $candidate){
-			$parsed = IceCandidate::parse("candidate:" . $candidate);
+		foreach($connection->getLocalCandidates() as $line){
+			$parsed = IceCandidate::parse($line);
 			if($parsed !== null){
 				$candidates[] = $parsed;
 			}

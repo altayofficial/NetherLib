@@ -7,7 +7,7 @@ namespace altay\netherlib\tests;
 use altay\netherlib\Credentials;
 use altay\netherlib\IceServer;
 use PHPUnit\Framework\TestCase;
-use Webrtc\Webrtc\RTCConfiguration;
+use altay\datachannel\Context;
 
 final class CredentialsTest extends TestCase{
 
@@ -51,19 +51,34 @@ final class CredentialsTest extends TestCase{
 		self::assertFalse($credentials->isExpired(PHP_INT_MAX));
 	}
 
-	public function testConfigurationIsAcceptedByTheLibrary() : void{
+	public function testTurnUrlsCarryTheirCredentials() : void{
 		$credentials = Credentials::fromJson(self::PAYLOAD, 1000);
-		$configuration = new RTCConfiguration($credentials->toPeerConnectionConfiguration());
 
-		self::assertCount(2, $configuration->getIceServers());
-		self::assertSame("user", $configuration->getIceServers()[0]->getUsername());
+		self::assertSame("turn:user:pass@turn.example.com:3478", $credentials->iceServers[0]->toUrl("turn:turn.example.com:3478"));
+		self::assertSame("turns:a%3Ab:p%40ss@turn.example.com:5349", (new IceServer([], "a:b", "p@ss"))->toUrl("turns:turn.example.com:5349"));
 	}
 
-	public function testStunOnlyServerIsAcceptedByTheLibrary() : void{
-		$credentials = new Credentials([new IceServer(["stun:stun.example.com:3478"])]);
-		$configuration = new RTCConfiguration($credentials->toPeerConnectionConfiguration());
+	public function testStunUrlsAreLeftAlone() : void{
+		$server = new IceServer(["stun:stun.example.com:3478"], "", "");
 
-		self::assertCount(1, $configuration->getIceServers());
-		self::assertNull($configuration->getIceServers()[0]->getUsername());
+		self::assertSame("stun:stun.example.com:3478", $server->toUrl("stun:stun.example.com:3478"));
+		self::assertSame("stun:stun.example.com:3478", (new IceServer([]))->toUrl("stun:stun.example.com:3478"));
+	}
+
+	public function testUrlsAreAcceptedByTheLibrary() : void{
+		if(!extension_loaded("datachannel")){
+			self::markTestSkipped("ext-datachannel is not loaded");
+		}
+		$credentials = Credentials::fromJson(self::PAYLOAD, 1000);
+		$urls = [];
+		foreach($credentials->iceServers as $server){
+			foreach($server->urls as $url){
+				$urls[] = $server->toUrl($url);
+			}
+		}
+
+		$peer = (new Context())->createPeerConnection(["iceServers" => $urls]);
+		$peer->close();
+		self::assertCount(2, $urls);
 	}
 }

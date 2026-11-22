@@ -28,6 +28,8 @@ namespace altay\netherlib;
 use function array_values;
 use function is_array;
 use function is_string;
+use function preg_match;
+use function rawurlencode;
 
 final class IceServer{
 
@@ -69,16 +71,12 @@ final class IceServer{
 	}
 
 	/**
-	 * @return array{urls: string[], username: ?string, credential: ?string, credentialType: string}
+	 * One of the server's URLs the way libdatachannel takes it, with the credentials folded into a TURN one.
 	 */
-	public function toConfiguration() : array{
-		return [
-			"urls" => $this->urls,
-			//a plain STUN server carries neither, but both keys have to be present: the library
-			//passes credentialType straight into a non-nullable setter and fatals when it is absent
-			"username" => $this->username,
-			"credential" => $this->password,
-			"credentialType" => "password"
-		];
+	public function toUrl(string $url) : string{
+		if($this->username === null || !preg_match('/^(turns?):(.*)$/i', $url, $matches)){
+			return $url;
+		}
+		return $matches[1] . ":" . rawurlencode($this->username) . ":" . rawurlencode($this->password ?? "") . "@" . $matches[2];
 	}
 }

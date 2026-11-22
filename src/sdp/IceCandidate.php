@@ -134,6 +134,11 @@ final class IceCandidate{
 		return strlen($packed) === 4 ? self::isConnectableV4($packed) : self::isConnectableV6($packed);
 	}
 
+	public function isLoopback() : bool{
+		$packed = @inet_pton($this->address);
+		return $packed !== false && ($packed === inet_pton("::1") || (strlen($packed) === 4 && ord($packed[0]) === 127));
+	}
+
 	private static function isConnectableV4(string $packed) : bool{
 		$first = ord($packed[0]);
 		if($first === 0 || $first === 127){ //0.0.0.0/8, 127.0.0.0/8
