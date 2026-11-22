@@ -15,7 +15,7 @@ jobs:
         php: ["8.3", "8.4", "8.5"]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -25,7 +25,7 @@ jobs:
           tools: phpize, php-config
 
       - name: Checkout ext-datachannel
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: altayofficial/ext-datachannel
           ref: 0.1.1
