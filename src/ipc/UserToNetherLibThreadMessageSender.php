@@ -67,16 +67,4 @@ final class UserToNetherLibThreadMessageSender{
 		$this->channel->write(chr(CommandId::UNBLOCK_ADDRESS) . $address);
 	}
 
-	public function addRawPacketFilter(string $regex) : void{
-		$this->channel->write(chr(CommandId::ADD_RAW_PACKET_FILTER) . $regex);
-	}
-
-	public function sendRaw(string $address, int $port, string $payload) : void{
-		$this->channel->write(
-			chr(CommandId::SEND_RAW) .
-			chr(strlen($address)) . $address .
-			Binary::writeLShort($port) .
-			$payload
-		);
-	}
 }

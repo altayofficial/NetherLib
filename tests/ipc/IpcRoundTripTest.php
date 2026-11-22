@@ -32,7 +32,6 @@ final class IpcRoundTripTest extends TestCase{
 		$sender->onPacketAck($id, 99);
 		$sender->onPingUpdate($id, 42);
 		$sender->onBandwidthUpdate(1000, 2000);
-		$sender->onRawPacketReceive("1.2.3.4", 19132, "raw");
 		$sender->onSessionClose($id, "timeout");
 
 		$events = [];
@@ -44,7 +43,6 @@ final class IpcRoundTripTest extends TestCase{
 			public function onPacketReceive(int $id, string $pl) : void{ $this->events[] = ["packet", $id, $pl]; }
 			public function onPacketAck(int $id, int $r) : void{ $this->events[] = ["ack", $id, $r]; }
 			public function onPingUpdate(int $id, int $ms) : void{ $this->events[] = ["ping", $id, $ms]; }
-			public function onRawPacketReceive(string $a, int $p, string $pl) : void{ $this->events[] = ["raw", $a, $p, $pl]; }
 			public function onBandwidthUpdate(int $s, int $r) : void{ $this->events[] = ["bw", $s, $r]; }
 		};
 
@@ -58,7 +56,6 @@ final class IpcRoundTripTest extends TestCase{
 			["ack", $id, 99],
 			["ping", $id, 42],
 			["bw", 1000, 2000],
-			["raw", "1.2.3.4", 19132, "raw"],
 			["close", $id, "timeout"],
 		], $events);
 	}
@@ -88,8 +85,6 @@ final class IpcRoundTripTest extends TestCase{
 			public function setName(string $name) : void{}
 			public function blockAddress(string $address, int $timeout = 300) : void{}
 			public function unblockAddress(string $address) : void{}
-			public function addRawPacketFilter(string $regex) : void{}
-			public function sendRaw(string $address, int $port, string $payload) : void{}
 		};
 
 		$receiver = new UserToNetherLibThreadMessageReceiver($channel);

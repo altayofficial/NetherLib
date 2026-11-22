@@ -39,8 +39,4 @@ interface ServerInterface{
 	public function blockAddress(string $address, int $timeout = 300) : void;
 
 	public function unblockAddress(string $address) : void;
-
-	public function addRawPacketFilter(string $regex) : void;
-
-	public function sendRaw(string $address, int $port, string $payload) : void;
 }

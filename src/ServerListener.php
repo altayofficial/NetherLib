@@ -41,7 +41,5 @@ interface ServerListener{
 
 	public function onPingUpdate(int $sessionId, int $pingMS) : void;
 
-	public function onRawPacketReceive(string $address, int $port, string $payload) : void;
-
 	public function onBandwidthUpdate(int $bytesSentDiff, int $bytesReceivedDiff) : void;
 }

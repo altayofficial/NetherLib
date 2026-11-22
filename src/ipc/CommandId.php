@@ -33,8 +33,6 @@ final class CommandId{
 	public const SET_NAME = 3;
 	public const BLOCK_ADDRESS = 4;
 	public const UNBLOCK_ADDRESS = 5;
-	public const ADD_RAW_PACKET_FILTER = 6;
-	public const SEND_RAW = 7;
 
 	private function __construct(){
 

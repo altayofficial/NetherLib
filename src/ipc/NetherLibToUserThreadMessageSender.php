@@ -77,15 +77,6 @@ final class NetherLibToUserThreadMessageSender implements ServerListener{
 		);
 	}
 
-	public function onRawPacketReceive(string $address, int $port, string $payload) : void{
-		$this->channel->write(
-			chr(EventId::RAW_PACKET_RECEIVE) .
-			chr(strlen($address)) . $address .
-			Binary::writeLShort($port) .
-			$payload
-		);
-	}
-
 	public function onBandwidthUpdate(int $bytesSentDiff, int $bytesReceivedDiff) : void{
 		$this->channel->write(
 			chr(EventId::BANDWIDTH_UPDATE) .

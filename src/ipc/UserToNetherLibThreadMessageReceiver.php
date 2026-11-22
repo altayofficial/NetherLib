@@ -78,16 +78,6 @@ final class UserToNetherLibThreadMessageReceiver{
 			case CommandId::UNBLOCK_ADDRESS:
 				$server->unblockAddress(substr($message, $offset));
 				break;
-			case CommandId::ADD_RAW_PACKET_FILTER:
-				$server->addRawPacketFilter(substr($message, $offset));
-				break;
-			case CommandId::SEND_RAW:
-				$addressLength = ord($message[$offset++]);
-				$address = substr($message, $offset, $addressLength);
-				$offset += $addressLength;
-				$port = Binary::readLShort(substr($message, $offset, 2));
-				$server->sendRaw($address, $port, substr($message, $offset + 2));
-				break;
 		}
 		return true;
 	}

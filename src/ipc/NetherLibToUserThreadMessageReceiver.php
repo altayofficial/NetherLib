@@ -72,13 +72,6 @@ final class NetherLibToUserThreadMessageReceiver{
 				$sessionId = Binary::readLLong(substr($message, $offset, 8));
 				$listener->onPingUpdate($sessionId, Binary::readLInt(substr($message, $offset + 8, 4)));
 				break;
-			case EventId::RAW_PACKET_RECEIVE:
-				$addressLength = ord($message[$offset++]);
-				$address = substr($message, $offset, $addressLength);
-				$offset += $addressLength;
-				$port = Binary::readLShort(substr($message, $offset, 2));
-				$listener->onRawPacketReceive($address, $port, substr($message, $offset + 2));
-				break;
 			case EventId::BANDWIDTH_UPDATE:
 				$sent = Binary::readLLong(substr($message, $offset, 8));
 				$received = Binary::readLLong(substr($message, $offset + 8, 8));
