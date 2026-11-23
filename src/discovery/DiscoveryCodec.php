@@ -32,7 +32,8 @@ use pocketmine\utils\BinaryDataException;
 final class DiscoveryCodec{
 
 	private const CHECKSUM_LENGTH = 32;
-	private const HEADER_PADDING = 8;
+	/** Header bytes past the reliable flag, nothing reads them */
+	private const HEADER_PADDING = 7;
 	private const CIPHER_BLOCK_LENGTH = 16;
 	/** The longest a payload is declared, by clients and BDS alike: a signal's longest behind its header */
 	private const MAX_DECLARED_LENGTH = 1172;
@@ -62,17 +63,67 @@ final class DiscoveryCodec{
 	}
 
 	public static function marshal(DiscoveryPacket $packet, int $senderId) : string{
+		$out = new PacketSerializer();
+		self::writeFrame($out, $packet, $senderId);
+		$payload = $out->getBuffer();
+		return DiscoveryCrypto::checksum($payload) . DiscoveryCrypto::encrypt($payload);
+	}
+
+	/**
+	 * Writes a packet with its length prefix and header. A reliable packet carries a whole message
+	 * framed like this inside it, which is why it's split out of marshal().
+	 *
+	 * @internal
+	 */
+	public static function writeFrame(PacketSerializer $out, DiscoveryPacket $packet, int $senderId) : void{
 		$body = new PacketSerializer();
 		$body->putLShort($packet->getId());
 		$body->putLLong($senderId);
+		//retail sets this on everything it sends, reliable or not, and drops reliable packets without it
+		$body->putByte(1);
 		$body->put(str_repeat("\x00", self::HEADER_PADDING));
 		$packet->encodePayload($body);
-
 		$buffer = $body->getBuffer();
 		//capped the way retail declares it, the whole payload follows anyway
-		$payload = pack("v", min(strlen($buffer) + 2, self::MAX_DECLARED_LENGTH)) . $buffer;
+		$out->putLShort(min(strlen($buffer) + 2, self::MAX_DECLARED_LENGTH));
+		$out->put($buffer);
+	}
 
-		return DiscoveryCrypto::checksum($payload) . DiscoveryCrypto::encrypt($payload);
+	/**
+	 * Reads what writeFrame() wrote. The packet runs to the end of the buffer, the declared length
+	 * is not to be trusted.
+	 *
+	 * @internal
+	 *
+	 * @param int[]|null $allowedIds packet IDs that may appear here, null for any
+	 *
+	 * @return array{DiscoveryPacket, int} packet and sender network ID
+	 *
+	 * @throws BinaryDataException
+	 * @throws \InvalidArgumentException
+	 */
+	public static function readFrame(PacketSerializer $in, ?array $allowedIds = null) : array{
+		$in->getLShort(); //length prefix, counts itself and pretty unused
+		$packetId = $in->getLShort();
+		$senderId = $in->getLLong();
+		$reliable = $in->getByte() !== 0;
+		$in->get(self::HEADER_PADDING);
+		if($allowedIds !== null && !in_array($packetId, $allowedIds, true)){
+			throw new \InvalidArgumentException("packet ID $packetId is not allowed here");
+		}
+		$packet = match($packetId){
+			DiscoveryRequestPacket::ID => new DiscoveryRequestPacket(),
+			DiscoveryResponsePacket::ID => new DiscoveryResponsePacket(),
+			DiscoveryMessagePacket::ID => new DiscoveryMessagePacket(),
+			DiscoveryReliablePacket::ID => new DiscoveryReliablePacket(),
+			DiscoveryAcknowledgementPacket::ID => new DiscoveryAcknowledgementPacket(),
+			default => throw new \InvalidArgumentException("unknown packet ID $packetId")
+		};
+		if(!$reliable && ($packet instanceof DiscoveryReliablePacket || $packet instanceof DiscoveryAcknowledgementPacket)){
+			throw new \InvalidArgumentException("packet $packetId needs the reliable flag and doesn't have it");
+		}
+		$packet->decodePayload($in);
+		return [$packet, $senderId];
 	}
 
 	/**
@@ -116,33 +167,16 @@ final class DiscoveryCodec{
 
 		try{
 			$in = new PacketSerializer($payload);
-			$in->getLShort(); //length prefix, counts itself and pretty unused
-
-			$packetId = $in->getLShort();
-			$senderId = $in->getLLong();
-			$in->get(self::HEADER_PADDING);
-
-			$packet = match($packetId){
-				DiscoveryRequestPacket::ID => new DiscoveryRequestPacket(),
-				DiscoveryResponsePacket::ID => new DiscoveryResponsePacket(),
-				DiscoveryMessagePacket::ID => new DiscoveryMessagePacket(),
-				default => null
-			};
-			if($packet === null){
-				$reason = "carries an unknown packet ID $packetId";
-				return null;
-			}
-			$packet->decodePayload($in);
+			[$packet, $senderId] = self::readFrame($in);
 			if(!$in->feof()){
 				$remaining = $in->getRemaining();
-				$reason = "has " . strlen($remaining) . " bytes left over after packet $packetId: " . self::preview($remaining);
+				$reason = "has " . strlen($remaining) . " bytes left over after packet " . $packet->getId() . ": " . self::preview($remaining);
 				return null;
 			}
 		}catch(BinaryDataException | \InvalidArgumentException $e){
 			$reason = "is malformed: " . $e->getMessage();
 			return null;
 		}
-
 		return [$packet, $senderId];
 	}
 }

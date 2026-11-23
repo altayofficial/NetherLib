@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace altay\netherlib\tests\discovery;
 
+use altay\netherlib\discovery\DiscoveryAcknowledgementPacket;
 use altay\netherlib\discovery\DiscoveryCodec;
 use altay\netherlib\discovery\DiscoveryMessagePacket;
+use altay\netherlib\discovery\DiscoveryReliablePacket;
 use altay\netherlib\discovery\DiscoveryRequestPacket;
 use altay\netherlib\discovery\DiscoveryResponsePacket;
 use altay\netherlib\DiscoveryCrypto;
@@ -94,5 +96,61 @@ final class DiscoveryCodecTest extends TestCase{
 		$encoded = DiscoveryCodec::marshal(new DiscoveryRequestPacket(), 1);
 		$encoded[0] = $encoded[0] === "\x00" ? "\x01" : "\x00";
 		self::assertNull(DiscoveryCodec::unmarshal($encoded));
+	}
+
+	public function testReliableRoundTrip() : void{
+		$message = new DiscoveryMessagePacket(777, "CANDIDATEADD 5 candidate:1 1 udp 1 10.0.0.1 1 typ host");
+		$encoded = DiscoveryCodec::marshal(new DiscoveryReliablePacket(777, -5, 3, 42, $message), 42);
+		$result = DiscoveryCodec::unmarshal($encoded);
+		self::assertNotNull($result);
+		[$packet, $sender] = $result;
+		self::assertInstanceOf(DiscoveryReliablePacket::class, $packet);
+		self::assertSame(42, $sender);
+		self::assertSame(777, $packet->recipientId);
+		self::assertSame(-5, $packet->nonce);
+		self::assertSame(3, $packet->sequence);
+		self::assertSame(42, $packet->senderId);
+		self::assertSame(777, $packet->message->recipientId);
+		self::assertSame($message->data, $packet->message->data);
+	}
+
+	public function testAcknowledgementRoundTrip() : void{
+		$result = DiscoveryCodec::unmarshal(DiscoveryCodec::marshal(new DiscoveryAcknowledgementPacket(42, 9, 10), 777));
+		self::assertNotNull($result);
+		[$packet, $sender] = $result;
+		self::assertInstanceOf(DiscoveryAcknowledgementPacket::class, $packet);
+		self::assertSame(777, $sender);
+		self::assertSame(42, $packet->recipientId);
+		self::assertSame(9, $packet->nonce);
+		self::assertSame(10, $packet->sequence);
+	}
+
+	public function testRejectsAcknowledgementWithoutReliableFlag() : void{
+		$body = new PacketSerializer();
+		$body->putLShort(DiscoveryAcknowledgementPacket::ID);
+		$body->putLLong(42);
+		$body->put(str_repeat("\x00", 8));
+		$body->putLLong(777);
+		$body->putLLong(1);
+		$body->putLLong(2);
+		$payload = pack("v", strlen($body->getBuffer()) + 2) . $body->getBuffer();
+
+		self::assertNull(DiscoveryCodec::unmarshal(DiscoveryCrypto::checksum($payload) . DiscoveryCrypto::encrypt($payload), $reason));
+		self::assertNotNull($reason);
+	}
+
+	public function testRejectsReliableCarryingSomethingOtherThanAMessage() : void{
+		$body = new PacketSerializer();
+		$body->putLShort(DiscoveryReliablePacket::ID);
+		$body->putLLong(42);
+		$body->putByte(1);
+		$body->put(str_repeat("\x00", 7));
+		$body->putLLong(777);
+		$body->putLLong(1);
+		$body->putLLong(2);
+		DiscoveryCodec::writeFrame($body, new DiscoveryRequestPacket(), 42);
+		$payload = pack("v", strlen($body->getBuffer()) + 2) . $body->getBuffer();
+
+		self::assertNull(DiscoveryCodec::unmarshal(DiscoveryCrypto::checksum($payload) . DiscoveryCrypto::encrypt($payload)));
 	}
 }

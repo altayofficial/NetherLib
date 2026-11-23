@@ -30,10 +30,13 @@ use altay\netherlib\endpoint\EndpointClient;
 use altay\netherlib\endpoint\EndpointHandler;
 use altay\netherlib\endpoint\EndpointSignalSink;
 use altay\netherlib\endpoint\SignallingServer;
+use altay\netherlib\discovery\DiscoveryAcknowledgementPacket;
 use altay\netherlib\discovery\DiscoveryCodec;
 use altay\netherlib\discovery\DiscoveryMessagePacket;
+use altay\netherlib\discovery\DiscoveryReliablePacket;
 use altay\netherlib\discovery\DiscoveryRequestPacket;
 use altay\netherlib\discovery\DiscoveryResponsePacket;
+use altay\netherlib\discovery\ReliableDelivery;
 use altay\netherlib\auth\ClientIdentityAssertion;
 use altay\netherlib\auth\IdentityException;
 use altay\netherlib\auth\ServerIdentity;
@@ -140,6 +143,7 @@ final class NetherNetServer implements ServerInterface{
 	private ?Credentials $signallingCredentials = null;
 
 	private AddressBook $addressBook;
+	private ReliableDelivery $reliable;
 	private AdvertisedAddresses $advertised;
 	private int $lastMaintenance = 0;
 
@@ -172,6 +176,7 @@ final class NetherNetServer implements ServerInterface{
 		private bool $verboseLogging = false
 	){
 		$this->addressBook = new AddressBook();
+		$this->reliable = new ReliableDelivery();
 		$this->advertised = new AdvertisedAddresses($advertisedAddresses);
 	}
 
@@ -492,6 +497,12 @@ final class NetherNetServer implements ServerInterface{
 
 		$this->rtc?->poll();
 
+		if($this->reliable->getOutgoingCount() > 0){
+			foreach($this->reliable->retransmit(microtime(true)) as [$datagram, $address, $port]){
+				$this->sendDatagram($datagram, $address, $port);
+			}
+		}
+
 		//the HTTP endpoint and the timers still live on React's loop
 		Loop::futureTick(static function() : void{
 			Loop::stop();
@@ -511,6 +522,7 @@ final class NetherNetServer implements ServerInterface{
 			$this->expireIdleSessions($now);
 			$this->expireRateLimits($now);
 			$this->addressBook->expire($now);
+			$this->reliable->expire($now);
 			$this->reportBandwidth();
 			$this->reportPings();
 		}
@@ -777,24 +789,56 @@ final class NetherNetServer implements ServerInterface{
 			$this->discoveryResponse ??= DiscoveryCodec::marshal(new DiscoveryResponsePacket($this->serverData->encode()), $this->networkId);
 			$this->sendDatagram($this->discoveryResponse, $address, $port);
 		}elseif($packet instanceof DiscoveryMessagePacket){
-			//a recipient of zero addresses whoever picks the message up, which is how some clients
-			//signal before they have learned the network ID they are talking to
-			if($packet->recipientId !== 0 && $packet->recipientId !== $this->networkId){
-				$this->logger->debug("Ignoring discovery message from $address:$port intended for network " . $packet->recipientId);
-				return;
+			$this->handleMessage($packet, $senderId, $address, $port);
+		}elseif($packet instanceof DiscoveryReliablePacket){
+			$this->handleReliable($packet, $senderId, $address, $port);
+		}elseif($packet instanceof DiscoveryAcknowledgementPacket){
+			if($packet->recipientId === $this->networkId && !$this->reliable->acknowledge($senderId, $packet)){
+				$this->logger->debug("Unexpected acknowledgement from $address:$port for " . $packet->nonce . "/" . $packet->sequence);
 			}
-			if($packet->data === "" || $packet->data === "Ping"){
-				//keep-alive sent by clients scanning the network, it carries no signal
-				return;
-			}
-			$signal = Signal::fromString($packet->data);
-			if($signal === null){
-				$this->logger->debug("Invalid signal from $address:$port: " . substr($packet->data, 0, 64));
-				return;
-			}
-			$this->logger->debug("Signal " . $signal->type . " from $address:$port (connection " . $signal->connectionId . ")");
-			$this->handleSignal($signal, $senderId, $address, $port);
 		}
+	}
+
+	private function handleReliable(DiscoveryReliablePacket $packet, int $senderId, string $address, int $port) : void{
+		if($packet->recipientId !== $this->networkId){
+			$this->logger->debug("Ignoring reliable discovery message from $address:$port intended for network " . $packet->recipientId);
+			return;
+		}
+		//the message is framed again inside, so both IDs show up twice and have to agree
+		if($packet->message->recipientId !== $packet->recipientId || $packet->senderId !== $senderId){
+			$this->logger->debug("Ignoring reliable discovery message from $address:$port, the message inside is addressed differently");
+			return;
+		}
+		$first = $this->reliable->receive($senderId, $packet, time());
+		//a repeat means our acknowledgement got lost, so every copy gets one
+		$this->sendDatagram(
+			DiscoveryCodec::marshal(new DiscoveryAcknowledgementPacket($senderId, $packet->nonce, $packet->sequence), $this->networkId),
+			$address,
+			$port
+		);
+		if($first){
+			$this->handleMessage($packet->message, $senderId, $address, $port);
+		}
+	}
+
+	private function handleMessage(DiscoveryMessagePacket $packet, int $senderId, string $address, int $port) : void{
+		//a recipient of zero addresses whoever picks the message up, which is how some clients
+		//signal before they have learned the network ID they are talking to
+		if($packet->recipientId !== 0 && $packet->recipientId !== $this->networkId){
+			$this->logger->debug("Ignoring discovery message from $address:$port intended for network " . $packet->recipientId);
+			return;
+		}
+		if($packet->data === "" || $packet->data === "Ping"){
+			//keep-alive sent by clients scanning the network, it carries no signal
+			return;
+		}
+		$signal = Signal::fromString($packet->data);
+		if($signal === null){
+			$this->logger->debug("Invalid signal from $address:$port: " . substr($packet->data, 0, 64));
+			return;
+		}
+		$this->logger->debug("Signal " . $signal->type . " from $address:$port (connection " . $signal->connectionId . ")");
+		$this->handleSignal($signal, $senderId, $address, $port);
 	}
 
 	private function handleSignal(Signal $signal, int $senderNetworkId, string $address, int $port) : void{
@@ -1490,8 +1534,15 @@ final class NetherNetServer implements ServerInterface{
 	}
 
 	private function sendSignal(Signal $signal, int $recipientNetworkId, string $address, int $port) : void{
-		$datagram = DiscoveryCodec::marshal(new DiscoveryMessagePacket($recipientNetworkId, (string) $signal), $this->networkId);
+		$message = new DiscoveryMessagePacket($recipientNetworkId, (string) $signal);
+		if(!$this->reliable->speaksReliable($recipientNetworkId)){
+			$this->sendDatagram(DiscoveryCodec::marshal($message, $this->networkId), $address, $port);
+			return;
+		}
+		$packet = $this->reliable->wrap($message, $this->networkId);
+		$datagram = DiscoveryCodec::marshal($packet, $this->networkId);
 		$this->sendDatagram($datagram, $address, $port);
+		$this->reliable->track($packet, $datagram, $address, $port);
 	}
 
 	private function sendDatagram(string $datagram, string $address, int $port) : void{
