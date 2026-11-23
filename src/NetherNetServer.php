@@ -695,11 +695,11 @@ final class NetherNetServer implements ServerInterface{
 	}
 
 	public function sendPacket(int $sessionId, string $payload, bool $immediate = false, ?int $receiptId = null) : void{
-		$this->sessions[$sessionId]?->sendPacket($payload, $immediate, $receiptId);
+		($this->sessions[$sessionId] ?? null)?->sendPacket($payload, $immediate, $receiptId);
 	}
 
 	public function closeSession(int $sessionId) : void{
-		$this->sessions[$sessionId]?->disconnect();
+		($this->sessions[$sessionId] ?? null)?->disconnect();
 	}
 
 	public function getSession(int $connectionId) : ?NetherNetSession{
